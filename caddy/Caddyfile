@@ -1,0 +1,17 @@
+# Production Caddyfile — Debian target.
+#
+# No TLS configuration is needed. Caddy 2.5+ recognises a *.ts.net site address
+# and fetches the certificate from the local tailscaled over its unix socket,
+# which docker-compose.yml mounts in. Requirements on the target:
+#
+#   - HTTPS Certificates and MagicDNS enabled for the tailnet in the Tailscale
+#     admin console. Without these no certificate can be issued at all.
+#   - CADDY_DOMAIN set to the machine's fully qualified tailnet name.
+#   - Caddy reachable only on the tailnet — enforced by publishing its ports to
+#     CADDY_BIND_ADDR (the tailnet IP), not 0.0.0.0.
+#
+# Fallback if the socket route misbehaves: run `tailscale cert` on the host to
+# write cert and key files, mount them read-only, and add an explicit
+# `tls <cert> <key>` to each site block in sites.caddy.
+
+import sites.caddy

@@ -1,0 +1,80 @@
+# macOS development override. Layered on top of docker-compose.yml via
+# COMPOSE_FILE in .env — never used on the Debian target.
+#
+# Two jobs:
+#
+#   1. Strip what macOS cannot provide (/dev/dri, the render group, the
+#      tailscaled socket) using Compose's !reset and !override merge tags.
+#
+#   2. Put /data on a named Docker volume instead of a host bind mount. This is
+#      the important one. A named volume lives on real ext4 inside Docker's
+#      Linux VM, so inodes, link counts and PUID/PGID behave exactly as they
+#      will on the target. macOS VirtioFS bind mounts reproduce none of that
+#      faithfully, which would make a hardlink test result meaningless — and
+#      hardlinking is the invariant most likely to be silently wrong.
+#
+# Every media service mounts the SAME `mediadata` volume, so torrents/ and
+# media/ share one filesystem exactly as spec §3.3 requires.
+
+services:
+
+  jellyfin:
+    # No Intel iGPU here. Jellyfin falls back to software transcoding.
+    devices: !reset []
+    group_add: !reset []
+    volumes: !override
+      - jellyfin_config:/config
+      - mediadata:/data
+
+  prowlarr:
+    volumes: !override
+      - prowlarr_config:/config
+
+  sonarr:
+    volumes: !override
+      - sonarr_config:/config
+      - mediadata:/data
+
+  radarr:
+    volumes: !override
+      - radarr_config:/config
+      - mediadata:/data
+
+  bazarr:
+    volumes: !override
+      - bazarr_config:/config
+      - mediadata:/data
+
+  qbittorrent:
+    volumes: !override
+      - qbittorrent_config:/config
+      - mediadata:/data
+
+  recyclarr:
+    volumes: !override
+      - recyclarr_config:/config
+      - ./config/recyclarr/recyclarr.yml:/config/recyclarr.yml:ro
+
+  caddy:
+    # Drops the tailscaled socket mount and swaps in the dev Caddyfile, which
+    # adds the `local_certs` global so Caddy issues from its own internal CA.
+    # Routes themselves come from the same sites.caddy as production.
+    volumes: !override
+      - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - ./caddy/sites.caddy:/etc/caddy/sites.caddy:ro
+      - caddy_data:/caddydata
+      - caddy_config:/config
+
+volumes:
+  # The media root. Shared by every media-touching service — one volume is
+  # what makes hardlinks between torrents/ and media/ possible.
+  mediadata:
+  jellyfin_config:
+  prowlarr_config:
+  sonarr_config:
+  radarr_config:
+  bazarr_config:
+  qbittorrent_config:
+  recyclarr_config:
+  caddy_data:
+  caddy_config:

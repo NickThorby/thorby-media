@@ -5,13 +5,16 @@
 *.pem
 secrets/
 
-# Tailnet-identifying config (contains the real <host>.ts.net name and tailnet IP)
-Caddyfile.local
-
-# Runtime state that must never be tracked (lives on the server, not in git)
-config/
-data/
-appdata/
+# Runtime state. Container config normally lives outside the repo (at
+# CONFIG_ROOT, /opt/mediaserver on the target) and the dev stack uses named
+# Docker volumes, so nothing should land here — these are a safety net for a
+# mistyped DATA_ROOT or CONFIG_ROOT pointing inside the working tree.
+/data/
+/appdata/
+/dev/
+#
+# NOTE: config/ is deliberately NOT ignored — config/recyclarr/recyclarr.yml is
+# version-controlled and mounted read-only into the container.
 
 # Editor / OS noise
 .DS_Store

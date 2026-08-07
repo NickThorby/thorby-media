@@ -50,7 +50,16 @@ it is falling back to software.
 
 ## 3. A test import produces a shared inode, not a copy
 
-The critical one. Grab something small, let Sonarr or Radarr import it, then:
+The critical one. `scripts/test-hardlinks.sh` automates it — it writes a file as
+qBittorrent and links it as Sonarr, then compares device, inode and link count,
+which also proves the two containers agree about `/data`:
+
+```bash
+./scripts/test-hardlinks.sh
+```
+
+Then confirm it holds for a *real* import too. Grab something small, let Sonarr
+or Radarr import it, and check by hand:
 
 ```bash
 ls -li /data/torrents/movies/<release>/<file>.mkv \

@@ -1,0 +1,21 @@
+# Development Caddyfile — macOS dev box only.
+#
+# Identical routing to production (same sites.caddy); the only difference is
+# certificate issuance. There is no tailnet here, so `local_certs` forces every
+# site onto Caddy's internal CA instead of trying to reach tailscaled or ACME.
+#
+# With CADDY_DOMAIN=localhost the services are served at, e.g.,
+# https://sonarr.localhost:8443 — macOS resolves *.localhost to 127.0.0.1.
+#
+# The certificate will not be trusted by your browser until you add Caddy's
+# root CA to the system keychain. Extract it with:
+#
+#   docker compose cp caddy:/caddydata/caddy/pki/authorities/local/root.crt .
+#
+# Or just click through the warning — this proves routing works, nothing more.
+
+{
+	local_certs
+}
+
+import sites.caddy

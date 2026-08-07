@@ -1,0 +1,199 @@
+# Production stack for the Debian target. This file alone is the complete
+# spec §4 deployment — on the target, `docker compose up -d` needs no flags.
+#
+# The macOS dev box layers docker-compose.dev.yml on top via COMPOSE_FILE in
+# .env. Production is deliberately the default: forgetting COMPOSE_FILE on
+# Debian yields the correct stack, while forgetting it on the Mac fails loudly
+# on the missing /dev/dri rather than silently disabling hardware transcoding.
+
+name: mediaserver
+
+# LinuxServer images share the same PUID/PGID/TZ contract. These must match the
+# `media` user that owns the media tree, or imports fail on permissions.
+x-env: &env
+  PUID: ${PUID:-1000}
+  PGID: ${PGID:-1000}
+  TZ: ${TZ:-Africa/Johannesburg}
+
+services:
+
+  # ── Media server ───────────────────────────────────────────────────────────
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    restart: unless-stopped
+    environment:
+      <<: *env
+    # Quick Sync passthrough. RENDER_GID is required rather than defaulted: a
+    # wrong GID silently falls back to software transcoding (spec §4.2).
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${RENDER_GID:?RENDER_GID is unset. On the target run: getent group render. On the Mac, uncomment the MAC DEV block in .env}"
+    volumes:
+      - ${CONFIG_ROOT:-/opt/mediaserver}/jellyfin:/config
+      - ${DATA_ROOT:-/data}:/data
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:${JELLYFIN_PORT:-8096}:8096"
+
+  # ── Indexers ───────────────────────────────────────────────────────────────
+  # No /data mount: Prowlarr only brokers indexer definitions to the *arr apps.
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    restart: unless-stopped
+    environment:
+      <<: *env
+    volumes:
+      - ${CONFIG_ROOT:-/opt/mediaserver}/prowlarr:/config
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:${PROWLARR_PORT:-9696}:9696"
+
+  # ── TV and anime ───────────────────────────────────────────────────────────
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    restart: unless-stopped
+    environment:
+      <<: *env
+    volumes:
+      - ${CONFIG_ROOT:-/opt/mediaserver}/sonarr:/config
+      - ${DATA_ROOT:-/data}:/data
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:${SONARR_PORT:-8989}:8989"
+
+  # ── Films ──────────────────────────────────────────────────────────────────
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    restart: unless-stopped
+    environment:
+      <<: *env
+    volumes:
+      - ${CONFIG_ROOT:-/opt/mediaserver}/radarr:/config
+      - ${DATA_ROOT:-/data}:/data
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:${RADARR_PORT:-7878}:7878"
+
+  # ── Subtitles ──────────────────────────────────────────────────────────────
+  # Needs /data: it writes subtitle files alongside the media.
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    restart: unless-stopped
+    environment:
+      <<: *env
+    volumes:
+      - ${CONFIG_ROOT:-/opt/mediaserver}/bazarr:/config
+      - ${DATA_ROOT:-/data}:/data
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:${BAZARR_PORT:-6767}:6767"
+
+  # ── Download client ────────────────────────────────────────────────────────
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    restart: unless-stopped
+    environment:
+      <<: *env
+      WEBUI_PORT: 8080
+      TORRENTING_PORT: 6881
+    volumes:
+      - ${CONFIG_ROOT:-/opt/mediaserver}/qbittorrent:/config
+      - ${DATA_ROOT:-/data}:/data
+    # Moves onto gluetun when the VPN is enabled — see the block at the bottom.
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:${QBIT_PORT:-8080}:8080"
+      - "${BIND_ADDR:-0.0.0.0}:${QBIT_TORRENT_PORT:-6881}:6881/tcp"
+      - "${BIND_ADDR:-0.0.0.0}:${QBIT_TORRENT_PORT:-6881}:6881/udp"
+
+  # ── Quality profile sync ───────────────────────────────────────────────────
+  # Pulls Trash Guides profiles and anime release-group scores into Sonarr and
+  # Radarr on a schedule (spec §8). Talks to their APIs only — no /data.
+  recyclarr:
+    image: ghcr.io/recyclarr/recyclarr:latest
+    container_name: recyclarr
+    restart: unless-stopped
+    user: ${PUID:-1000}:${PGID:-1000}
+    environment:
+      TZ: ${TZ:-Africa/Johannesburg}
+      CRON_SCHEDULE: "@daily"
+      SONARR_API_KEY: ${SONARR_API_KEY:-}
+      RADARR_API_KEY: ${RADARR_API_KEY:-}
+    volumes:
+      # Mutable state (cache, cloned guide repo) on the SSD; the config itself
+      # is version-controlled in this repo and mounted read-only over it.
+      - ${CONFIG_ROOT:-/opt/mediaserver}/recyclarr:/config
+      - ./config/recyclarr/recyclarr.yml:/config/recyclarr.yml:ro
+    depends_on:
+      - sonarr
+      - radarr
+
+  # ── Reverse proxy ──────────────────────────────────────────────────────────
+  # The only service bound to the tailnet interface rather than the LAN.
+  # Caddy 2.5+ fetches *.ts.net certificates from the local tailscaled with no
+  # Caddyfile configuration — hence the socket mount.
+  caddy:
+    image: caddy:alpine
+    container_name: caddy
+    restart: unless-stopped
+    environment:
+      CADDY_DOMAIN: ${CADDY_DOMAIN:?CADDY_DOMAIN is unset, e.g. myhost.ts.net}
+      # Relocated off Caddy's default /data. In this stack /data means the media
+      # root in every container; having one container where it means something
+      # else is exactly the ambiguity that causes mistakes later.
+      XDG_DATA_HOME: /caddydata
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/sites.caddy:/etc/caddy/sites.caddy:ro
+      - ${CONFIG_ROOT:-/opt/mediaserver}/caddy/data:/caddydata
+      - ${CONFIG_ROOT:-/opt/mediaserver}/caddy/config:/config
+      - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock:ro
+    ports:
+      - "${CADDY_BIND_ADDR:?CADDY_BIND_ADDR is unset. On the target run: tailscale ip -4}:${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_BIND_ADDR}:${CADDY_HTTPS_PORT:-443}:443"
+    depends_on:
+      - jellyfin
+      - prowlarr
+      - sonarr
+      - radarr
+      - bazarr
+      - qbittorrent
+
+  # ── VPN gateway — deferred, spec §7 ────────────────────────────────────────
+  # Commented out until a provider with working port forwarding is chosen.
+  # Port forwarding is the deciding feature; without it inbound peers fail and
+  # seeding degrades badly. Mullvad and IVPN have both dropped it and are
+  # unsuitable here. Candidates: Proton VPN Plus (NAT-PMP, Gluetun can
+  # auto-configure qBittorrent's listening port), AirVPN, PIA.
+  #
+  # To enable:
+  #   1. Uncomment this service and fill in the provider credentials
+  #   2. Add to qbittorrent:  network_mode: "service:gluetun"
+  #   3. Delete qbittorrent's `ports:` block — a container using another
+  #      container's network stack cannot publish its own ports
+  #   4. Move those three published ports onto gluetun below
+  #   5. Set the forwarded port as qBittorrent's listening port
+  #
+  # gluetun:
+  #   image: qmcgaw/gluetun:latest
+  #   container_name: gluetun
+  #   restart: unless-stopped
+  #   cap_add:
+  #     - NET_ADMIN
+  #   devices:
+  #     - /dev/net/tun:/dev/net/tun
+  #   environment:
+  #     TZ: ${TZ:-Africa/Johannesburg}
+  #     VPN_SERVICE_PROVIDER: ${VPN_PROVIDER:-}
+  #     VPN_TYPE: wireguard
+  #     WIREGUARD_PRIVATE_KEY: ${VPN_PRIVATE_KEY:-}
+  #     WIREGUARD_ADDRESSES: ${VPN_ADDRESSES:-}
+  #     SERVER_COUNTRIES: ${VPN_COUNTRIES:-}
+  #     VPN_PORT_FORWARDING: "on"
+  #   volumes:
+  #     - ${CONFIG_ROOT:-/opt/mediaserver}/gluetun:/gluetun
+  #   ports:
+  #     - "${BIND_ADDR:-0.0.0.0}:${QBIT_PORT:-8080}:8080"
+  #     - "${BIND_ADDR:-0.0.0.0}:${QBIT_TORRENT_PORT:-6881}:6881/tcp"
+  #     - "${BIND_ADDR:-0.0.0.0}:${QBIT_TORRENT_PORT:-6881}:6881/udp"

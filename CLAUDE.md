@@ -58,36 +58,55 @@ requiring explicit justification.
 3. **`PUID=1000` / `PGID=1000`** everywhere, matching the `media` user that owns
    `/mnt/disk1/data`. Jellyfin additionally needs the host's `render` GID via
    `group_add` for `/dev/dri` access.
-4. **Nothing is exposed to the public internet.** No router port forwarding.
-   Caddy binds only to the Tailscale interface. qBittorrent's
-   "run external program on completion" is arbitrary command execution by
-   design; the *arr apps authenticate with a key printed in their own UI.
-   Neither tolerates hostile exposure. Never add a `0.0.0.0` publish or a
-   public DNS record.
+4. **Nothing is exposed to the public internet.** No router port forwarding, no
+   public DNS record. Caddy — the remote-access path — binds only to the
+   tailnet IP (`CADDY_BIND_ADDR`). Service ports do publish on the LAN via
+   `BIND_ADDR`, which is intended: spec §5.1 wants direct LAN access and Infuse
+   reaches Jellyfin that way. The boundary is the router plus UFW, not the bind
+   address (decisions.md D1). qBittorrent's "run external program on completion"
+   is arbitrary command execution by design; the *arr apps authenticate with a
+   key printed in their own UI. Neither tolerates hostile exposure.
 5. **Gluetun stays commented out** until a VPN provider with working port
    forwarding is chosen (§7). Do not uncomment it speculatively.
 
 ## Repo layout
 
 ```
-CLAUDE.md              this file
-README.md              operator-facing: build, configure, migrate
-.env.example           template; the real .env is gitignored
-docker-compose.yml     the stack (deliverable §9.1)
-Caddyfile              reverse proxy, Tailscale-bound (deliverable §9.3)
-setup.sh               host provisioning for Debian (deliverable §9.4)
+CLAUDE.md                 this file
+README.md                 operator-facing: build, configure, migrate
+.env.example              template; the real .env is gitignored
+docker-compose.yml        the production stack (deliverable §9.1)
+docker-compose.dev.yml    macOS-only override, layered via COMPOSE_FILE
+setup.sh                  host provisioning for Debian (deliverable §9.4)
+caddy/
+  sites.caddy             the routes — shared by both environments
+  Caddyfile               production: ts.net certs from tailscaled
+  Caddyfile.dev           dev: internal CA via local_certs
+config/
+  recyclarr/recyclarr.yml quality profile templates (tracked, not ignored)
+scripts/
+  validate.sh             static checks; run before every commit
+  init-tree.sh            create the §3.1 /data tree in a running stack
+  test-hardlinks.sh       prove the hardlink invariant
 docs/
-  spec.md              source of truth — the build specification
-  decisions.md         implementation decisions + open questions
-  dev-testing.md       what can and cannot be validated on macOS
-  verification.md      the acceptance checklist, run on the target
+  spec.md                 source of truth — the build specification
+  decisions.md            implementation decisions + open questions
+  dev-testing.md          what can and cannot be validated on macOS
+  verification.md         the acceptance checklist, run on the target
 ```
 
 ## Conventions
 
-- **Compose:** no top-level `version:` key — it is obsolete and Compose v2+
-  warns about it. One file, no overrides, no profiles unless a deliverable needs
-  them.
+- **Compose:** no top-level `version:` key — it is obsolete. Two files:
+  `docker-compose.yml` is the production stack and the default, and
+  `docker-compose.dev.yml` is layered on top only on macOS, via `COMPOSE_FILE`
+  in `.env`. **Production is deliberately the default** — forgetting the
+  override on Debian yields a correct stack, while forgetting it on the Mac
+  fails loudly on the missing `/dev/dri`. Never invert that. New services go in
+  the production file first; add a dev override only if macOS cannot run it.
+- **Compose interpolates before it merges override files.** A `${VAR:?}` in the
+  base file errors even when the dev override `!reset`s the field that used it —
+  which is why `.env`'s Mac block still sets a dummy `RENDER_GID`.
 - **Images:** `lscr.io/linuxserver/*` for the app stack (they provide the
   `PUID`/`PGID`/`TZ` contract this design depends on), `caddy:alpine` for the
   proxy. Do not substitute other maintainers' images.
@@ -114,22 +133,40 @@ looks plausible and gets copy-pasted into production.
 
 ## Validating changes here
 
-These work on macOS and are cheap. Run them before claiming a config change is
-good:
+One command, works on macOS and Debian, needs nothing running:
 
 ```bash
-docker compose config -q                       # compose syntax + env interpolation
-docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
-  caddy:alpine caddy validate --config /etc/caddy/Caddyfile
-docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:stable setup.sh
+./scripts/validate.sh
 ```
 
-`shellcheck` and `yamllint` are not installed natively on this box; use the
-container forms above.
+It parses the compose config, asserts mechanically that exactly the five media
+services mount `/data` and that they all resolve to **one** source (invariant 1
+and 2, which no runtime error would catch), confirms Gluetun is still commented
+out, validates both Caddyfiles, and shellchecks every script. Run it before
+every commit.
+
+With the stack up, `./scripts/test-hardlinks.sh` proves invariant 2 for real —
+it writes a file as qBittorrent and links it as Sonarr, then compares device,
+inode, and link count.
+
+`setup.sh` cannot run here, but its logic can be exercised in a container:
+
+```bash
+docker run --rm -v "$PWD:/repo:ro" debian:trixie \
+  bash -c 'cd /repo && bash setup.sh --dry-run --skip-packages --disk /dev/sdX'
+```
+
+`shellcheck` and `yamllint` are not installed natively; `validate.sh` uses the
+container forms.
 
 ## Current state
 
-Documentation phase. `docker-compose.yml`, `.env.example`, `Caddyfile`,
-`setup.sh`, and the operator sections of `README.md` are **not written yet** —
-see the deliverables list in §9 of the spec and the open questions in
+All spec §9 deliverables are implemented. Verified on the Mac: both compose
+layerings render correctly, all eight containers start, every web UI responds
+directly and through Caddy, and the hardlink test passes on the named volume.
+
+Untested until the Debian box exists — do not report these as working: hardware
+transcoding, `*.ts.net` certificates, tailnet-only binding, UFW, smartd
+delivery, and unattended boot. They are tracked in
+[`docs/verification.md`](docs/verification.md); open questions are in
 [`docs/decisions.md`](docs/decisions.md).

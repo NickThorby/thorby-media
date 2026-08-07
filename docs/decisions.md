@@ -66,6 +66,53 @@ automatic — no Watchtower. Back up `${CONFIG_ROOT}` before pulling.
 
 Revisit if an unattended update ever breaks the stack.
 
+### D8. Two compose files, with production as the default
+
+`docker-compose.yml` is the complete Debian stack. `docker-compose.dev.yml`
+strips what macOS cannot provide and is layered on only by setting
+`COMPOSE_FILE` in `.env`. Both machines then run a bare `docker compose up -d`.
+
+The direction is the point. If the portable config were the base and production
+the override, forgetting `COMPOSE_FILE` on Debian would silently produce a
+Jellyfin with no hardware transcoding — a quiet degradation. This way the
+failure lands on the Mac, where a missing `/dev/dri` stops the container loudly.
+
+Depends on Compose's `!reset` and `!override` merge tags, verified working on
+Compose v5.1.3. Note that **interpolation happens before merging**: a `${VAR:?}`
+in the base errors even when the override resets that field, which is why the
+Mac block in `.env` still sets a dummy `RENDER_GID`.
+
+### D9. The dev stack puts `/data` on a named Docker volume
+
+Not a host bind mount. A named volume lives on ext4 inside Docker's Linux VM, so
+inodes, link counts and PUID/PGID behave as they will on the target. macOS
+VirtioFS has documented permission-mapping bugs and does not reproduce inode
+semantics faithfully, which would make a local hardlink test result worthless —
+and hardlinking is the invariant most likely to be silently wrong.
+
+The cost is that `/data` is not browsable from Finder; use
+`docker compose exec`. `scripts/init-tree.sh` creates the §3.1 tree inside it.
+
+### D10. `LAN_SUBNET` reconciles §5.1 with §5.3
+
+Spec §5.3 says "allow SSH and the Tailscale interface; deny inbound otherwise",
+but applied literally that also blocks §5.1's direct LAN access — including
+Infuse on the Apple TV reaching Jellyfin, which is the primary playback path.
+The two sections conflict.
+
+`setup.sh` resolves it with an explicit `LAN_SUBNET` in `.env`. Set it and the
+home network is allowed in while the internet still is not; leave it blank and
+the box is strictly tailnet-only and the script warns clearly about what that
+costs. No subnet is ever guessed.
+
+### D11. Caddy's certificate storage is relocated off `/data`
+
+The `caddy` image stores certificates in `/data` by default. In this stack
+`/data` means the media root in *every* container, and having exactly one where
+it means something else is the kind of ambiguity that causes a mistake later.
+`XDG_DATA_HOME=/caddydata` moves it. The image's own empty `/data` directory
+remains in the container layer but is inert — not a volume, and never written.
+
 ---
 
 ## Open
@@ -77,49 +124,59 @@ Each of these blocks or shapes a deliverable. Answers go here once settled.
 The Caddyfile needs the real `<host>` in `sonarr.<host>.ts.net`. Needs the
 machine joined to the tailnet first (§2.2). Placeholder until then.
 
-### Q2. How Caddy obtains TLS certs for `*.ts.net`
-
-Two workable approaches, not yet chosen or tested:
-
-- **Caddy's Tailscale integration** — Caddy asks tailscaled for the cert. Needs
-  `/var/run/tailscale/tailscaled.sock` mounted into the container.
-- **`tailscale cert` on the host** — writes cert and key to disk on a timer;
-  Caddy reads them read-only via `tls <cert> <key>`.
-
-Either way, **HTTPS Certificates and MagicDNS must be enabled for the tailnet in
-the Tailscale admin console** or no cert can be issued at all. Verify that
-first. Do not assert which mechanism is in use until one has actually served a
-valid cert.
-
-### Q3. smartd has no mail transport
-
-§3.5 requires email alerts on attribute failure, but the package list in §2.1
-contains no MTA — `smartd`'s `-m` directive shells out to `/usr/sbin/sendmail`,
-which does not exist on a minimal Debian install. Alerts would fail silently,
-which is the exact failure mode the requirement exists to prevent.
-
-Options: `msmtp-mta` with an SMTP relay (simplest), a local `postfix` in
-satellite mode, or replace email with a webhook via `-M exec`. Needs a decision
-plus a destination address before `setup.sh` can implement §3.5 honestly.
-
-Related: `ufw` is likewise absent from §2.1 but required by §5.3. Both go into
-`setup.sh`'s package list.
-
-### Q4. Recyclarr
-
-§8 strongly recommends it for maintained anime quality profiles, but it is
-absent from the §4 service table and the §9 deliverables. Add it as an eighth
-container (it runs on a schedule and writes to the *arr APIs), or leave it out
-of v1 and hand-tune?
-
 ### Q5. Anime: dual-audio or subtitle-only
 
 §8 says to decide up front because it drives release-group preferences
-significantly. This determines the quality profile, and — if Q4 lands on
-Recyclarr — which template gets synced.
+significantly. The Recyclarr anime templates in
+`config/recyclarr/recyclarr.yml` currently default to subtitle-preferred; going
+dual-audio means adding the "Dual Audio" custom format with a positive score.
 
-### Q6. Media disk state
+Not blocking — it can be set when the library is first populated.
 
-Is the 8 TB drive blank, or does it already hold data? `setup.sh` formatting a
-populated disk is unrecoverable, so the script must refuse to `mkfs` anything it
-did not create and the answer must be confirmed before it is run.
+---
+
+## Closed
+
+### Q2 → Caddy fetches `*.ts.net` certs from tailscaled automatically *(D2, D11)*
+
+Caddy 2.5+ recognises a `*.ts.net` site address and obtains the certificate from
+the local Tailscale daemon with **no Caddyfile configuration at all**. The
+production Caddyfile is therefore just `import sites.caddy`.
+
+What it needs: `/var/run/tailscale/tailscaled.sock` mounted into the container
+(done in `docker-compose.yml`), and **HTTPS Certificates plus MagicDNS enabled
+for the tailnet in the Tailscale admin console** — without those no certificate
+can be issued at all. If Caddy runs as non-root, tailscaled additionally needs
+`TS_PERMIT_CERT_UID` set.
+
+Fallback if the socket route misbehaves: `tailscale cert` on the host writing
+key files, mounted read-only, with an explicit `tls <cert> <key>` per site.
+
+**Still unverified** — there is no tailnet yet. Do not report certificates as
+working until one has actually been served.
+
+### Q3 → msmtp relaying to an SMTP server *(chosen)*
+
+`setup.sh` installs `msmtp-mta` as the `sendmail` provider and writes
+`/etc/msmtprc` (mode 0600) from the `SMTP_*` values in `.env`, so smartd's
+native `-m` works. If `SMTP_HOST`/`ALERT_EMAIL` are unset the script skips the
+step and warns loudly that alerts will not be delivered, rather than writing a
+config that fails silently.
+
+`ufw` was likewise absent from §2.1 but required by §5.3; both are now in
+`setup.sh`'s package list.
+
+### Q4 → Recyclarr ships in v1 *(chosen)*
+
+Added as an eighth service with its config version-controlled at
+`config/recyclarr/recyclarr.yml` and mounted read-only. API keys come from
+`SONARR_API_KEY`/`RADARR_API_KEY` in `.env` via Recyclarr's `!env_var`, so the
+config file stays committable.
+
+### Q6 → `setup.sh` cannot format a non-blank disk *(resolved by design)*
+
+The question is moot: formatting is opt-in via an explicit `--format-disk`, and
+the script refuses any device carrying a filesystem or partition table, telling
+the operator to run `wipefs` manually if they really mean it. Verified against
+real loopback devices — it refuses a populated one and proceeds on a blank one.
+Combined with `--dry-run`, the script cannot be the thing that destroys data.

@@ -1,0 +1,55 @@
+# Recyclarr — syncs Trash Guides quality definitions, profiles and custom
+# formats into Sonarr and Radarr on a daily schedule (spec §8).
+#
+# Mounted read-only at /config/recyclarr.yml. API keys come from the
+# environment rather than being written here, so this file stays committable —
+# set SONARR_API_KEY and RADARR_API_KEY in .env, reading each from the app's
+# Settings > General page after its first start.
+#
+# Run a sync immediately instead of waiting for the cron:
+#   docker compose exec recyclarr recyclarr sync
+#
+# Preview what a template would change before it is applied:
+#   docker compose exec recyclarr recyclarr sync --preview
+
+sonarr:
+  main:
+    base_url: http://sonarr:8989
+    api_key: !env_var SONARR_API_KEY
+
+    quality_definition:
+      type: series
+
+    include:
+      # ── Standard TV ──────────────────────────────────────────────────────
+      - template: sonarr-quality-definition-series
+      - template: sonarr-v4-quality-profile-web-1080p
+      - template: sonarr-v4-custom-formats-web-1080p
+
+      # ── Anime ────────────────────────────────────────────────────────────
+      # Creates a separate anime profile encoding community release-group
+      # rankings. Pair it with Series Type: Anime and the /data/media/anime
+      # root folder so absolute episode numbering is used and TVDB season
+      # splits stay out of the main TV library.
+      #
+      # NOTE (decisions.md Q5): these templates default to subtitle-preferred.
+      # For dual-audio, add the "Dual Audio" custom format with a positive
+      # score in a custom_formats block below — it materially changes which
+      # release groups win.
+      - template: sonarr-v4-quality-profile-anime
+      - template: sonarr-v4-custom-formats-anime
+
+radarr:
+  main:
+    base_url: http://radarr:7878
+    api_key: !env_var RADARR_API_KEY
+
+    quality_definition:
+      type: movie
+
+    include:
+      - template: radarr-quality-definition-movie
+      - template: radarr-quality-profile-hd-bluray-web
+      - template: radarr-custom-formats-hd-bluray-web
+
+      # Anime films need no special handling beyond this (spec §8).

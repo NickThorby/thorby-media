@@ -7,10 +7,10 @@ Full requirements are in [`docs/spec.md`](docs/spec.md). This README is the
 operator's guide: how to bring it up, configure it in the right order, and grow
 it later.
 
-> **Status: documentation phase.** `docker-compose.yml`, `.env.example`,
-> `Caddyfile`, and `setup.sh` are not written yet. The configuration sequence
-> and migration path below are complete and final; the deployment section is
-> marked where it depends on those files.
+> **Status.** All deliverables are implemented and validated on a macOS dev box.
+> Hardware transcoding, `*.ts.net` certificates, tailnet binding, UFW, smartd
+> delivery, and unattended boot are **untested** — they need the Debian machine.
+> See [`docs/verification.md`](docs/verification.md).
 
 ---
 
@@ -47,17 +47,84 @@ HEVC entrypoints. If `/dev/dri` does not exist, it is disabled in BIOS.
 
 ## Deployment
 
-> Pending `setup.sh` and `docker-compose.yml`. The intended shape:
->
-> 1. Clone this repo to `/opt/mediaserver`
-> 2. `cp .env.example .env` and fill in `PUID`, `PGID`, `TZ`, `RENDER_GID`
->    (`getent group render`), `TAILSCALE_IP`, and the tailnet hostname
-> 3. Review, then run `sudo ./setup.sh` — packages, the `media` user, the
->    directory tree, fstab entries, smartd, UFW
-> 4. `docker compose up -d`
->
-> `setup.sh` formats and mounts a disk and rewrites `/etc/fstab`. Read it before
-> running it, and confirm the target disk is the one you think it is.
+Clone the repo onto the target, then:
+
+```bash
+cp .env.example .env
+```
+
+Leave the MAC DEV block at the bottom commented out — the production values are
+the defaults, so a Debian box needs no override file and no flags.
+
+**1. Dry run first.** `setup.sh` rewrites `/etc/fstab`, creates a system user,
+enables a firewall and can format a disk. None of that can be rehearsed on the
+dev machine, so start by looking at exactly what it intends to do:
+
+```bash
+sudo ./setup.sh --dry-run --disk /dev/sdX
+```
+
+Every mutation is printed and nothing is applied. Confirm `/dev/sdX` is the disk
+you think it is (`lsblk -f`) before going further.
+
+**2. Provision the host.** Add `--format-disk` only if the media disk is blank
+and you want the script to make the filesystem. It refuses any device that
+already carries a filesystem or partition table, so it will not destroy an
+existing library — but check anyway.
+
+```bash
+sudo ./setup.sh --disk /dev/sdX [--format-disk]
+```
+
+This installs packages from Docker's official repository, creates the `media`
+user, builds the directory tree, adds the fstab entries, configures msmtp and
+smartd, sets UFW rules, and prints the values you need for the next step.
+
+**3. Finish `.env`.** Paste in what the script reported:
+
+| Variable | Where it comes from |
+|---|---|
+| `RENDER_GID` | `getent group render` |
+| `CADDY_BIND_ADDR` | `tailscale ip -4` |
+| `CADDY_DOMAIN` | the machine's fully qualified `<host>.ts.net` |
+| `LAN_SUBNET` | your home network, e.g. `192.168.1.0/24` |
+| `SMTP_*`, `ALERT_EMAIL` | your mail relay — without these SMART alerts go nowhere |
+
+`LAN_SUBNET` matters more than it looks: leave it blank and UFW blocks LAN
+clients from reaching Jellyfin, so Infuse on the Apple TV will not find it
+unless the Apple TV is on the tailnet. Re-run `sudo ./setup.sh --skip-packages`
+after editing to apply the firewall change.
+
+**4. Verify the iGPU** before starting anything:
+
+```bash
+vainfo | grep -Ei 'h264|hevc'
+```
+
+Both H.264 and HEVC must show decode and encode entrypoints. If `/dev/dri` is
+missing entirely, integrated graphics is disabled in BIOS — revisit §1.1.
+
+**5. Start the stack.**
+
+```bash
+docker compose up -d
+./scripts/validate.sh
+./scripts/test-hardlinks.sh
+```
+
+The hardlink test is not optional. It writes a file as qBittorrent and links it
+as Sonarr, then compares device, inode and link count — the same thing step 6 of
+the configuration sequence asks you to check by hand, done automatically.
+
+Then work through [`docs/verification.md`](docs/verification.md).
+
+### Developing on another machine
+
+The macOS dev workflow is in [`docs/dev-testing.md`](docs/dev-testing.md). In
+short: uncomment the MAC DEV block in `.env` and `docker compose up -d`. That
+layers `docker-compose.dev.yml`, which strips the `/dev/dri` passthrough and
+puts `/data` on a named volume so hardlinks and permissions behave as they do on
+ext4.
 
 ---
 
@@ -239,6 +306,17 @@ is not set to Anime.
 
 | Path | What |
 |---|---|
+| `docker-compose.yml` | The production stack. Complete on its own; no flags needed on Debian |
+| `docker-compose.dev.yml` | macOS-only override, layered via `COMPOSE_FILE` in `.env` |
+| `.env.example` | Every host-specific value, with a commented Mac block |
+| `setup.sh` | Debian host provisioning — idempotent, `--dry-run`, opt-in disk format |
+| `caddy/sites.caddy` | The reverse-proxy routes, shared by both environments |
+| `caddy/Caddyfile` | Production: `*.ts.net` certs from tailscaled |
+| `caddy/Caddyfile.dev` | Dev: internal CA |
+| `config/recyclarr/recyclarr.yml` | Quality profile templates, incl. anime |
+| `scripts/validate.sh` | Static checks — run before every commit |
+| `scripts/init-tree.sh` | Create the §3.1 `/data` tree in a running stack |
+| `scripts/test-hardlinks.sh` | Prove the hardlink invariant |
 | [`CLAUDE.md`](CLAUDE.md) | Working guidance for Claude Code |
 | [`docs/spec.md`](docs/spec.md) | The build specification — source of truth |
 | [`docs/decisions.md`](docs/decisions.md) | Implementation choices and open questions |

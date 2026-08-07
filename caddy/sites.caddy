@@ -1,0 +1,35 @@
+# Reverse proxy routes — spec §5.2.
+#
+# Shared by both the production and dev Caddyfiles so the two can never drift.
+# The only difference between environments is CADDY_DOMAIN and how certificates
+# are issued; the routing is identical.
+#
+#   production   CADDY_DOMAIN=<host>.ts.net   certs from the local tailscaled
+#   development  CADDY_DOMAIN=localhost       certs from Caddy's internal CA
+#
+# Upstreams are container names on the compose bridge network, so these must
+# stay in step with `container_name` in docker-compose.yml.
+
+jellyfin.{$CADDY_DOMAIN} {
+	reverse_proxy jellyfin:8096
+}
+
+sonarr.{$CADDY_DOMAIN} {
+	reverse_proxy sonarr:8989
+}
+
+radarr.{$CADDY_DOMAIN} {
+	reverse_proxy radarr:7878
+}
+
+prowlarr.{$CADDY_DOMAIN} {
+	reverse_proxy prowlarr:9696
+}
+
+bazarr.{$CADDY_DOMAIN} {
+	reverse_proxy bazarr:6767
+}
+
+qbit.{$CADDY_DOMAIN} {
+	reverse_proxy qbittorrent:8080
+}
