@@ -23,11 +23,17 @@ override layers automatically, and `docker compose up -d` needs no flags on
 either machine.
 
 ```bash
+./scripts/provision.sh --init-keys   # generate API keys into .env
 docker compose up -d
-./scripts/init-tree.sh          # create the §3.1 tree inside the volume
+./scripts/init-tree.sh               # create the §3.1 tree inside the volume
+./scripts/provision.sh               # wire qBittorrent, the *arrs and Prowlarr
 ./scripts/validate.sh
 ./scripts/test-hardlinks.sh
 ```
+
+`provision.sh` is fully exercisable here — it talks to the same APIs it will on
+the target, so a pass locally means the wiring logic is correct. Log in to
+qBittorrent with `QBIT_USER`/`QBIT_PASS` from `.env`.
 
 Services are on loopback only: Jellyfin `:8096`, Prowlarr `:9696`, Sonarr
 `:8989`, Radarr `:7878`, Bazarr `:6767`, qBittorrent `:8081`, and Caddy on

@@ -104,13 +104,21 @@ vainfo | grep -Ei 'h264|hevc'
 Both H.264 and HEVC must show decode and encode entrypoints. If `/dev/dri` is
 missing entirely, integrated graphics is disabled in BIOS — revisit §1.1.
 
-**5. Start the stack.**
+**5. Generate API keys and start the stack.**
 
 ```bash
+./scripts/provision.sh --init-keys    # writes keys into .env
 docker compose up -d
+./scripts/provision.sh                # wires everything together
 ./scripts/validate.sh
 ./scripts/test-hardlinks.sh
 ```
+
+`provision.sh` does steps 1–6 of the configuration sequence below over the apps'
+REST APIs: qBittorrent's password, save paths and categories; Sonarr's and
+Radarr's root folders, download client and hardlink setting; and registering
+both with Prowlarr so indexers sync automatically. It's idempotent — re-run it
+after any `.env` change.
 
 The hardlink test is not optional. It writes a file as qBittorrent and links it
 as Sonarr, then compares device, inode and link count — the same thing step 6 of
@@ -131,6 +139,11 @@ ext4.
 ## Configuration sequence
 
 Order matters — each step depends on the one before it. (Spec §6.)
+
+> **Steps 1–6 are automated by `./scripts/provision.sh`.** They're documented
+> here anyway, because you need to know what it did and where to change it. What
+> the script leaves for you is steps 2 (indexers), 7 (Bazarr) and 8–9
+> (Jellyfin and Infuse).
 
 ### 1. qBittorrent — `:8080`
 
@@ -314,6 +327,7 @@ is not set to Anime.
 | `caddy/Caddyfile` | Production: `*.ts.net` certs from tailscaled |
 | `caddy/Caddyfile.dev` | Dev: internal CA |
 | `config/recyclarr/recyclarr.yml` | Quality profile templates, incl. anime |
+| `scripts/provision.sh` | Wire the stack together over the apps' APIs — idempotent |
 | `scripts/validate.sh` | Static checks — run before every commit |
 | `scripts/init-tree.sh` | Create the §3.1 `/data` tree in a running stack |
 | `scripts/test-hardlinks.sh` | Prove the hardlink invariant |

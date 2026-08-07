@@ -113,6 +113,40 @@ it means something else is the kind of ambiguity that causes a mistake later.
 `XDG_DATA_HOME=/caddydata` moves it. The image's own empty `/data` directory
 remains in the container layer but is inert — not a volume, and never written.
 
+### D12. API keys are pinned in `.env`, not read out of each UI
+
+Sonarr, Radarr and Prowlarr accept their API key as a runtime environment
+variable (`SONARR__AUTH__APIKEY` and friends). Setting it there means the key is
+known before the container has ever started, which removes the chicken-and-egg
+that otherwise blocks automated configuration: you cannot call the API until the
+app has generated a key, and it only generates one on first run.
+
+Verified: the key is enforced (401 on a wrong or missing key, 200 on the pinned
+one) and is applied at runtime — it is never written into `config.xml`.
+
+This is what makes `scripts/provision.sh` possible, and it also removes the
+"copy the key out of the UI after first start" step that Recyclarr needed.
+
+Treat these keys as passwords; a valid *arr API key is full control of that app.
+They live only in `.env`, which is gitignored.
+
+### D13. qBittorrent host-header validation is disabled; CSRF protection is not
+
+qBittorrent 5.x validates the `Host` header on every request and rejects
+anything unexpected with a bare `401` — including requests arriving through
+Caddy, and requests to a remapped host port. Left on, `qbit.<host>.ts.net` is
+unusable and so is any port other than 8080.
+
+`provision.sh` therefore sets `web_ui_host_header_validation_enabled=false`.
+
+It deliberately leaves `web_ui_csrf_protection_enabled=true`. Testing confirmed
+only the host-header check was blocking access, so CSRF protection costs nothing
+to keep — and it is much the more valuable of the two here, since a valid
+qBittorrent session is effectively a shell (spec §5.3).
+
+The residual risk of disabling host-header validation is DNS rebinding, which is
+mitigated by the box being LAN- and tailnet-only with no port forwarding.
+
 ---
 
 ## Open

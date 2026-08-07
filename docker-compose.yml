@@ -44,6 +44,10 @@ services:
     restart: unless-stopped
     environment:
       <<: *env
+      # Pinning the key makes it known before first start, which is what lets
+      # scripts/provision.sh configure the stack without scraping config.xml.
+      # Applied at runtime; never written to config.xml.
+      PROWLARR__AUTH__APIKEY: ${PROWLARR_API_KEY:-}
     volumes:
       - ${CONFIG_ROOT:-/opt/mediaserver}/prowlarr:/config
     ports:
@@ -56,6 +60,7 @@ services:
     restart: unless-stopped
     environment:
       <<: *env
+      SONARR__AUTH__APIKEY: ${SONARR_API_KEY:-}
     volumes:
       - ${CONFIG_ROOT:-/opt/mediaserver}/sonarr:/config
       - ${DATA_ROOT:-/data}:/data
@@ -69,6 +74,7 @@ services:
     restart: unless-stopped
     environment:
       <<: *env
+      RADARR__AUTH__APIKEY: ${RADARR_API_KEY:-}
     volumes:
       - ${CONFIG_ROOT:-/opt/mediaserver}/radarr:/config
       - ${DATA_ROOT:-/data}:/data

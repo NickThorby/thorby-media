@@ -85,6 +85,7 @@ caddy/
 config/
   recyclarr/recyclarr.yml quality profile templates (tracked, not ignored)
 scripts/
+  provision.sh            wire the stack over the apps' REST APIs (idempotent)
   validate.sh             static checks; run before every commit
   init-tree.sh            create the §3.1 /data tree in a running stack
   test-hardlinks.sh       prove the hardlink invariant
@@ -125,7 +126,9 @@ docs/
 
 Nothing sensitive gets committed. `.env`, API keys, VPN credentials, the real
 tailnet hostname, and the tailnet IP all stay out of git — `.gitignore` covers
-them. Placeholders in tracked files use the spec's own notation:
+them. The *arr API keys are pinned in `.env` rather than read out of each UI
+(decisions.md D12); treat them as passwords, since a valid key is full control
+of that app. Placeholders in tracked files use the spec's own notation:
 `<host>.ts.net`, `<render-gid>`, `<disk1-uuid>`.
 
 If you need a real value to make progress, ask for it — don't invent one that
