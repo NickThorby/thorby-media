@@ -1,0 +1,24 @@
+# Secrets — never commit
+.env
+.env.local
+*.key
+*.pem
+secrets/
+
+# Tailnet-identifying config (contains the real <host>.ts.net name and tailnet IP)
+Caddyfile.local
+
+# Runtime state that must never be tracked (lives on the server, not in git)
+config/
+data/
+appdata/
+
+# Editor / OS noise
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Scratch
+*.log
+tmp/

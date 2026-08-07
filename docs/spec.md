@@ -1,0 +1,394 @@
+# Media Server Build Specification
+
+A self-hosted media server for a home network, serving a personal library of
+TV, film, and anime to Apple TV via Infuse, with automated acquisition and
+management.
+
+---
+
+## 1. Hardware
+
+| Component | Spec | Notes |
+|---|---|---|
+| CPU | Intel Core i7-8700K (Coffee Lake) | Quick Sync: HEVC 8/10-bit encode+decode, VP9 |
+| Motherboard | MSI Z370 GODLIKE GAMING | Killer E2500 NIC (`alx` driver) |
+| RAM | 32 GB | Far more than required |
+| OS disk | 500 GB SSD | OS, Docker, container configs |
+| Media disk | Seagate IronWolf ST8000VN004 (8 TB, CMR, 7200rpm) | Single drive to start |
+| Network | Wired gigabit LAN | Onboard WiFi is dead and must be disabled in BIOS |
+| GPU | None (discrete card removed) | iGPU used for transcoding |
+
+### 1.1 BIOS configuration
+
+Required:
+
+- **Integrated Graphics: Enabled**
+- **IGD Multi-Monitor: Enabled**
+- **Initiate Graphic Adapter: IGD**
+- **Integrated Graphics Share Memory: 64 MB or higher**
+- **Onboard WiFi module: Disabled** (hardware is faulty)
+- **Restore on AC Power Loss: Power On** (recovers unattended after outages)
+- **Fast Boot: Disabled**
+- All **C-states: Enabled**
+
+Recommended for power and noise:
+
+- Disable onboard audio, second LAN port, and unused controllers
+- Set a quiet-but-steady fan curve; the box idles 24/7 rather than bursting
+- Ensure at least one fan directs airflow across the drive bay
+
+### 1.2 Known board quirks
+
+- **M.2 / SATA lane sharing.** Populating certain M.2 slots disables specific
+  SATA ports on Z370. Consult the board manual's block diagram before
+  planning drive layout. If more than six SATA ports are eventually needed,
+  an LSI 9211-8i flashed to IT mode is the standard solution.
+- **Idle power** on this flagship board is high relative to a purpose-built
+  NAS, realistically 60-90 W with drives spinning.
+
+---
+
+## 2. Operating System
+
+**Debian 13 (Trixie), minimal server install.**
+
+- No desktop environment
+- SSH server enabled
+- Non-free firmware included (installer default in Debian 13)
+- Static IP or DHCP reservation on the LAN
+- Unattended-upgrades enabled for security updates only
+
+Rationale: five-year support lifecycle, no SELinux friction with Docker bind
+mounts, and the assumed baseline for essentially all self-hosting
+documentation.
+
+### 2.1 Post-install packages
+
+```
+docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+smartmontools
+intel-gpu-tools
+vainfo
+curl git htop
+```
+
+Docker must come from Docker's official repository, not Debian's `docker.io`
+package.
+
+### 2.2 Tailscale
+
+Install Tailscale and join the tailnet. This is the sole remote access
+mechanism. No ports are forwarded on the router.
+
+```
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up
+```
+
+Record the resulting tailnet IP; Caddy binds to it.
+
+---
+
+## 3. Storage
+
+### 3.1 Layout
+
+The 8 TB drive is mounted at `/mnt/disk1`, and `/data` is a bind mount onto it.
+This indirection exists so that adding drives later means swapping the bind
+mount for a mergerfs pool, with zero changes to container paths, no library
+rescan, and no broken hardlinks.
+
+```
+/mnt/disk1/data/
+├── torrents/
+│   ├── movies/
+│   ├── tv/
+│   └── anime/
+└── media/
+    ├── movies/
+    ├── tv/
+    └── anime/
+```
+
+`/data` is bind-mounted to `/mnt/disk1/data` and is the only path any
+container ever sees.
+
+### 3.2 Filesystem
+
+- ext4, formatted with `-m 0` (the default 5% root reserve wastes ~400 GB)
+- Mounted by UUID in `/etc/fstab`
+- Mount options: `defaults,noatime`
+
+Example `/etc/fstab` entries:
+
+```
+UUID=<disk1-uuid>  /mnt/disk1  ext4  defaults,noatime  0  2
+/mnt/disk1/data    /data       none  bind              0  0
+```
+
+### 3.3 Critical constraint: hardlinks
+
+`torrents/` and `media/` **must** be on the same filesystem. Sonarr and Radarr
+hardlink completed downloads into the library rather than copying, which means
+imports are instant, disk usage is not doubled, and seeding continues
+uninterrupted. Splitting these across filesystems silently degrades to copying.
+
+### 3.4 Permissions
+
+Create a dedicated service user and use its UID/GID for all containers.
+
+```
+groupadd -g 1000 media
+useradd -u 1000 -g 1000 -M -s /usr/sbin/nologin media
+chown -R media:media /mnt/disk1/data
+chmod -R 775 /mnt/disk1/data
+```
+
+Set `PUID=1000` and `PGID=1000` in the container environment.
+
+The `media` user must also be in the `render` group for `/dev/dri` access.
+
+### 3.5 SMART monitoring
+
+Configure `smartd` with:
+
+- Short self-test daily
+- Long self-test weekly
+- Email alert on any attribute failure or reallocated sector growth
+
+This is not optional. A single-drive setup has no redundancy, so early warning
+is the only protection.
+
+### 3.6 Growth path
+
+When a second drive is added:
+
+1. Mount it at `/mnt/disk2`, same ext4 and permissions setup
+2. Install `mergerfs`
+3. Replace the `/data` bind mount with a mergerfs pool over `/mnt/disk*`
+4. Set create policy to `epmfs` (existing path, most free space) so that a
+   given title's download and library file land on the same physical disk,
+   preserving hardlinks
+5. Restart the stack
+
+SnapRAID can be added later with a dedicated parity drive, sized at or above
+the largest data drive.
+
+**Note:** neither mergerfs nor SnapRAID is a backup. Irreplaceable data
+(personal photos, home video, documents) must not live solely on this machine.
+
+---
+
+## 4. Application Stack
+
+All services run as Docker containers, orchestrated by a single
+`docker-compose.yml`. Container configs live on the SSD at
+`/opt/mediaserver/<service>`.
+
+| Service | Image | Port | Purpose |
+|---|---|---|---|
+| Jellyfin | `lscr.io/linuxserver/jellyfin` | 8096 | Media server, Infuse source |
+| Prowlarr | `lscr.io/linuxserver/prowlarr` | 9696 | Indexer manager |
+| Sonarr | `lscr.io/linuxserver/sonarr` | 8989 | TV and anime |
+| Radarr | `lscr.io/linuxserver/radarr` | 7878 | Films |
+| Bazarr | `lscr.io/linuxserver/bazarr` | 6767 | Subtitles |
+| qBittorrent | `lscr.io/linuxserver/qbittorrent` | 8080 | Download client |
+| Caddy | `caddy:alpine` | 80/443 | Reverse proxy, Tailscale-bound |
+| Gluetun | `qmcgaw/gluetun` | n/a | VPN gateway (deferred, see §7) |
+
+### 4.1 Volume mapping rule
+
+Every container that touches media mounts the **same** path:
+
+```yaml
+volumes:
+  - /data:/data
+```
+
+Not `/data/media:/media`. Not `/data/tv:/tv`. Identical paths across all
+containers is what makes hardlinking work and is the single most common source
+of "why won't it import" failures.
+
+Config volumes are per-service and live on the SSD:
+
+```yaml
+  - /opt/mediaserver/sonarr:/config
+```
+
+### 4.2 Hardware transcoding
+
+Jellyfin requires GPU passthrough:
+
+```yaml
+devices:
+  - /dev/dri:/dev/dri
+group_add:
+  - "<render-gid>"   # from: getent group render
+```
+
+In Jellyfin's playback settings:
+
+- Hardware acceleration: **VAAPI**
+- Device: `/dev/dri/renderD128`
+- Enable hardware decoding for H.264, HEVC, VP9
+- Enable hardware encoding
+
+Verify on the host before starting: `vainfo` should list H.264 and HEVC
+encode/decode entrypoints. If `/dev/dri` does not exist, the iGPU is disabled
+in BIOS.
+
+Note: with Infuse as the primary client, transcoding is rarely invoked because
+Infuse direct-plays nearly all codecs and containers. This config matters for
+browser playback and remote clients.
+
+---
+
+## 5. Network and Access
+
+### 5.1 Access model
+
+- **Local LAN:** direct access to all services by IP and port
+- **Remote:** Tailscale only. No router port forwarding. Nothing listens on
+  the public IP.
+- **Apple TV:** Infuse connects to Jellyfin over LAN. For remote playback,
+  install Tailscale on the Apple TV.
+
+### 5.2 Caddy
+
+Caddy binds **only to the Tailscale interface**, providing hostnames and valid
+TLS for the admin UIs without any public exposure.
+
+Reverse proxy targets:
+
+- `sonarr.<host>.ts.net` -> `sonarr:8989`
+- `radarr.<host>.ts.net` -> `radarr:7878`
+- `prowlarr.<host>.ts.net` -> `prowlarr:9696`
+- `bazarr.<host>.ts.net` -> `bazarr:6767`
+- `qbit.<host>.ts.net` -> `qbittorrent:8080`
+- `jellyfin.<host>.ts.net` -> `jellyfin:8096`
+
+### 5.3 Security constraints
+
+**The *arr web UIs and qBittorrent must never be exposed to the public
+internet.** qBittorrent's "run external program on torrent completion" feature
+is arbitrary command execution by design; a valid session is equivalent to a
+shell. The *arr apps authenticate API access by a key visible in their own UI.
+Neither was designed for hostile network exposure.
+
+Additionally:
+
+- Change qBittorrent's default credentials on first login
+- Enable authentication in every *arr app
+- Leave qBittorrent's external-program setting empty
+- UFW: allow SSH and the Tailscale interface; deny inbound otherwise
+
+---
+
+## 6. Configuration Sequence
+
+Order matters; each step depends on the previous.
+
+1. **qBittorrent.** Set credentials. Create categories `movies`, `tv`, `anime`
+   with save paths under `/data/torrents/`. Enable preallocation. Set
+   incomplete downloads to a subfolder within the same path (not a different
+   filesystem).
+2. **Prowlarr.** Add indexers. Include anime-specific ones (see §8).
+3. **Prowlarr -> apps.** Add Sonarr and Radarr under Settings > Apps. Indexers
+   sync automatically from this point on.
+4. **Sonarr and Radarr -> qBittorrent.** Add as download client, matching the
+   category names from step 1.
+5. **Root folders.** Sonarr: `/data/media/tv` and `/data/media/anime`. Radarr:
+   `/data/media/movies`.
+6. **Verify hardlinking.** In Sonarr/Radarr, ensure "Use Hardlinks instead of
+   Copy" is enabled. Test with one import and confirm via `ls -li` that the
+   inode is shared and disk usage did not double. **Do not skip this check.**
+7. **Bazarr.** Connect to Sonarr and Radarr, configure subtitle providers and
+   languages.
+8. **Jellyfin.** Create libraries pointing at `/data/media/movies`,
+   `/data/media/tv`, `/data/media/anime`. Configure hardware acceleration.
+9. **Infuse.** Add Jellyfin as a source. This preserves watch state, resume
+   position, and library sync across devices, which a plain SMB share does not.
+
+### 6.1 Naming conventions
+
+Use the Trash Guides recommended naming schemes in Sonarr and Radarr. Jellyfin
+matches reliably against them, and they encode quality and edition information
+that Infuse surfaces.
+
+---
+
+## 7. Deferred: VPN for qBittorrent
+
+Gluetun is included in the compose file but **commented out** initially, as no
+provider has been selected yet.
+
+When enabling:
+
+1. Uncomment the `gluetun` service and populate provider credentials
+2. Change qBittorrent's `network_mode` to `service:gluetun`
+3. Remove qBittorrent's `ports:` block and move those port mappings onto
+   `gluetun`
+4. Configure port forwarding and set the forwarded port as qBittorrent's
+   listening port
+
+**Port forwarding is the deciding feature** when choosing a provider. Without
+it, inbound peer connections fail and seeding is severely degraded. Note that
+Mullvad and IVPN have both removed port forwarding and are unsuitable for this
+role despite being otherwise excellent.
+
+Candidate providers with working port forwarding and Gluetun support: Proton
+VPN Plus (NAT-PMP, Gluetun can auto-configure qBittorrent's port), AirVPN
+(manual port assignment via web panel), Private Internet Access.
+
+---
+
+## 8. Anime Handling
+
+Anime requires specific configuration and should be kept separate from the
+main TV library.
+
+- **Series Type: Anime** in Sonarr enables absolute episode numbering, which
+  is how the vast majority of anime releases are named.
+- **Dedicated root folder** `/data/media/anime`, added to Jellyfin as its own
+  library. TVDB season splits frequently disagree with release numbering, so
+  isolation prevents that inconsistency from affecting the main TV library.
+- **Anime indexers are mandatory.** Nyaa.si, AnimeTosho, and SubsPlease.
+  General-purpose trackers carry very little anime; without these, Sonarr will
+  find nothing.
+- **Separate quality profile** with "Anime Release Group" as a preferred term.
+  Decide on dual-audio versus subtitle-only up front, as this drives group
+  preferences significantly.
+- **Recyclarr** provides maintained anime quality profiles that encode
+  community release-group rankings. Strongly recommended over hand-tuning.
+- **Anime films** are handled by Radarr with no special configuration.
+
+For very large or long-running collections where TVDB mapping proves
+inadequate, Shoko Server with AniDB metadata is the more rigorous option, at
+the cost of considerable additional setup.
+
+---
+
+## 9. Deliverables
+
+Claude Code should produce:
+
+1. `docker-compose.yml` implementing §4, with Gluetun present but commented
+2. `.env` template for `PUID`, `PGID`, `TZ` (Africa/Johannesburg), and paths
+3. `Caddyfile` implementing §5.2, bound to the Tailscale interface
+4. `setup.sh` covering: package installation, user and group creation,
+   directory tree creation, fstab entries, smartd configuration, and UFW rules
+5. `README.md` documenting the configuration sequence in §6 and the mergerfs
+   migration path in §3.6
+
+### 9.1 Verification checklist
+
+Before considering the build complete:
+
+- [ ] `vainfo` reports HEVC and H.264 encode/decode entrypoints
+- [ ] `/dev/dri/renderD128` is visible inside the Jellyfin container
+- [ ] A test import produces a shared inode (`ls -li`), not a copy
+- [ ] Disk usage does not double after import
+- [ ] All services reachable over Tailscale, none over the public IP
+- [ ] `smartd` sends a test alert successfully
+- [ ] qBittorrent default credentials changed
+- [ ] Machine boots unattended and all containers start after a hard power cut
