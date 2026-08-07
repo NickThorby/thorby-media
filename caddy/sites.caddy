@@ -33,3 +33,7 @@ bazarr.{$CADDY_DOMAIN} {
 qbit.{$CADDY_DOMAIN} {
 	reverse_proxy qbittorrent:8080
 }
+
+sab.{$CADDY_DOMAIN} {
+	reverse_proxy sabnzbd:8080
+}

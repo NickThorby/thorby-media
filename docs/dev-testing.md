@@ -36,8 +36,15 @@ the target, so a pass locally means the wiring logic is correct. Log in to
 qBittorrent with `QBIT_USER`/`QBIT_PASS` from `.env`.
 
 Services are on loopback only: Jellyfin `:8096`, Prowlarr `:9696`, Sonarr
-`:8989`, Radarr `:7878`, Bazarr `:6767`, qBittorrent `:8081`, and Caddy on
-`:8443` serving `https://<service>.localhost:8443`.
+`:8989`, Radarr `:7878`, Bazarr `:6767`, qBittorrent `:8081`, SABnzbd `:8085`,
+and Caddy on `:8443` serving `https://<service>.localhost:8443`.
+
+To check the Usenet hardlink tree as well as the torrent one:
+
+```bash
+DOWNLOADER=sabnzbd SRC_DIR=/data/usenet/complete/tv LABEL=usenet \
+  ./scripts/test-hardlinks.sh
+```
 
 ---
 

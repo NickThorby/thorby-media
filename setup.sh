@@ -293,11 +293,13 @@ configure_fstab() {
 create_tree() {
   step "Directory tree"
 
-  # torrents/ and media/ are siblings on one filesystem so imports hardlink
-  # instead of copying (spec §3.3). Splitting them degrades silently.
+  # torrents/, usenet/ and media/ are siblings on one filesystem so imports
+  # hardlink instead of copying (spec §3.3). Splitting them degrades silently.
   local d
-  for d in torrents/movies torrents/tv torrents/anime \
-           media/movies    media/tv    media/anime; do
+  for d in torrents/movies       torrents/tv       torrents/anime \
+           usenet/incomplete \
+           usenet/complete/movies usenet/complete/tv usenet/complete/anime \
+           media/movies          media/tv          media/anime; do
     run mkdir -p "${DATA_DIR}/${d}"
   done
   run chown -R "${PUID}:${PGID}" "$DATA_DIR"

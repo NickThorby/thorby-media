@@ -52,9 +52,10 @@ requiring explicit justification.
    `- /data:/data`. Not `/data/media:/media`, not `/data/tv:/tv`. Mismatched
    paths between the download client and the *arr apps are the single most
    common cause of "why won't it import", and of hardlinking degrading to a copy.
-2. **One filesystem for `torrents/` and `media/`.** Hardlinks cannot cross
-   filesystems. If they are split, Sonarr/Radarr fall back to copying: double
-   disk usage, slow imports, and seeding breaks. Nothing warns you.
+2. **One filesystem for `torrents/`, `usenet/` and `media/`.** Hardlinks cannot
+   cross filesystems. If they are split, Sonarr/Radarr fall back to copying:
+   double disk usage, slow imports, and seeding breaks. Nothing warns you.
+   `scripts/test-hardlinks.sh` checks both download trees.
 3. **`PUID=1000` / `PGID=1000`** everywhere, matching the `media` user that owns
    `/mnt/disk1/data`. Jellyfin additionally needs the host's `render` GID via
    `group_add` for `/dev/dri` access.

@@ -20,11 +20,17 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# Both download paths are checked. Usenet completions live under
+# /data/usenet/complete and torrents under /data/torrents — different trees, but
+# they must be on the same filesystem as /data/media or imports from that
+# protocol silently start copying.
 DOWNLOADER=${DOWNLOADER:-qbittorrent}   # writes the "completed download"
 IMPORTER=${IMPORTER:-sonarr}            # performs the "import"
+SRC_DIR=${SRC_DIR:-/data/torrents/tv}   # override to test the usenet tree
+LABEL=${LABEL:-torrent}
 
 TEST_ID="hardlink-test-$$"
-SRC="/data/torrents/tv/${TEST_ID}.bin"
+SRC="${SRC_DIR}/${TEST_ID}.bin"
 DST="/data/media/tv/${TEST_ID}.bin"
 
 red()   { printf '\033[31m%s\033[0m\n' "$1"; }
@@ -43,6 +49,7 @@ for svc in "$DOWNLOADER" "$IMPORTER"; do
 done
 
 echo
+printf 'Checking the %s path\n' "$LABEL"
 echo "Writing an 8 MiB file as $DOWNLOADER at $SRC"
 docker compose exec -T "$DOWNLOADER" sh -c "
   set -e
@@ -87,8 +94,8 @@ read -r dst_dev dst_ino _ < <(docker compose exec -T "$IMPORTER" stat -c '%d %i 
 echo
 docker compose exec -T "$IMPORTER" ls -li "$SRC" "$DST"
 echo
-printf '  %-28s %s\n' "device (torrents/media)" "$src_dev / $dst_dev"
-printf '  %-28s %s\n' "inode  (torrents/media)" "$src_ino / $dst_ino"
+printf '  %-28s %s\n' "device (source / library)" "$src_dev / $dst_dev"
+printf '  %-28s %s\n' "inode  (source / library)" "$src_ino / $dst_ino"
 printf '  %-28s %s\n' "link count" "$src_lnk"
 echo
 

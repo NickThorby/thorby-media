@@ -147,6 +147,48 @@ qBittorrent session is effectively a shell (spec §5.3).
 The residual risk of disabling host-header validation is DNS rebinding, which is
 mitigated by the box being LAN- and tailnet-only with no port forwarding.
 
+### D14. SABnzbd runs alongside qBittorrent, not instead of it
+
+The *arrs speak both protocols and choose per release. SABnzbd is given download
+client priority 1 and qBittorrent 2, so Usenet wins where both have something —
+it is faster, has better retention, and carries no seeding obligation.
+
+qBittorrent is not redundant. **Usenet covers anime poorly**; Nyaa, SubsPlease
+and AnimeTosho have vastly more, particularly for fansubbed and older
+material. In practice Usenet carries TV and film while torrents carry anime,
+which is precisely the library this build exists for.
+
+Those public torrent indexers need no account, so `provision.sh` adds them by
+default from `TORRENT_INDEXERS` and Prowlarr syncs them straight through to
+Sonarr and Radarr. Use the `AnimeTosho` definition, not `Anime Tosho` —
+Prowlarr ships both, and despite its private label the former needs no
+credentials and validates, while the semiprivate one fails to connect.
+
+Usenet downloads land in `/data/usenet/{incomplete,complete}`, a sibling of
+`torrents/` and `media/` on the same filesystem, so imports from either
+protocol hardlink identically. `scripts/test-hardlinks.sh` checks both trees.
+
+Note the distinction that trips people up: an **indexer** (NZBgeek, NzbPlanet)
+is a catalogue that hands over an `.nzb`, while a **provider** (Eweka) is the
+news server holding the actual articles. They are separate subscriptions from
+separate companies, and indexers alone download nothing. `provision.sh` warns
+loudly when `USENET_USER` is blank rather than letting downloads fail silently.
+
+### D15. SABnzbd's host whitelist has to be set, like qBittorrent's host header
+
+SABnzbd rejects any request whose `Host` header is not in `host_whitelist` with
+a bare `403`. The default contains only the container's own ID, so
+`http://sabnzbd:8080` from Sonarr is refused and so is anything through Caddy —
+the same class of failure as D13, and just as opaque.
+
+`provision.sh` sets it to `sabnzbd,localhost,sab.${CADDY_DOMAIN}`. This is a
+whitelist rather than a blanket disable, so it is a tighter fix than the one
+qBittorrent needed.
+
+Unlike the *arrs, SABnzbd has no environment variable to pin its API key, so
+`provision.sh` reads it back out of `sabnzbd.ini` instead of asking you to copy
+it from the UI.
+
 ---
 
 ## Open

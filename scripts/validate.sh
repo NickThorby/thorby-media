@@ -14,7 +14,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # Services that touch media and therefore must share /data. Prowlarr brokers
 # indexers, Recyclarr talks to APIs, Caddy proxies — none need the media tree.
-MEDIA_SERVICES='["bazarr","jellyfin","qbittorrent","radarr","sonarr"]'
+MEDIA_SERVICES='["bazarr","jellyfin","qbittorrent","radarr","sabnzbd","sonarr"]'
 
 pass=0 fail=0
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; pass=$((pass + 1)); }

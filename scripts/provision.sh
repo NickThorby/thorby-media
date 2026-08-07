@@ -48,13 +48,15 @@ if [[ "${1:-}" == "--init-keys" ]]; then
       added=1
     fi
   done
-  if grep -qE '^QBIT_PASS=.+' .env; then
-    skip "QBIT_PASS already set"
-  else
-    printf 'QBIT_PASS=%s\n' "$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 20)" >> .env
-    ok "generated QBIT_PASS"
-    added=1
-  fi
+  for var in QBIT_PASS SAB_PASS BAZARR_PASS; do
+    if grep -qE "^${var}=.+" .env; then
+      skip "$var already set"
+    else
+      printf '%s=%s\n' "$var" "$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 20)" >> .env
+      ok "generated $var"
+      added=1
+    fi
+  done
   echo
   if [[ $added -eq 1 ]]; then
     echo "  Keys were appended to .env. The *arrs read them at startup, so:"
@@ -182,6 +184,183 @@ provision_qbittorrent() {
   done
 }
 
+# ─── SABnzbd ─────────────────────────────────────────────────────────────────
+
+SAB_API_KEY=""
+
+provision_sabnzbd() {
+  step "SABnzbd"
+
+  docker compose ps --status running --services | grep -qx sabnzbd \
+    || die "sabnzbd is not running. Start the stack: docker compose up -d"
+
+  # SABnzbd generates its own API key on first start and offers no environment
+  # variable to pin it, unlike the *arrs — so read it back out of the ini.
+  SAB_API_KEY=$(docker compose exec -T sabnzbd \
+    sh -c "grep '^api_key' /config/sabnzbd.ini | cut -d' ' -f3" | tr -d '\r')
+  [[ -n "$SAB_API_KEY" ]] || die "Could not read SABnzbd's API key from /config/sabnzbd.ini"
+  ok "read API key from sabnzbd.ini"
+
+  sab() {
+    docker compose exec -T sabnzbd curl -fsS -G http://localhost:8080/api \
+      --data-urlencode "apikey=${SAB_API_KEY}" --data-urlencode "output=json" "$@"
+  }
+
+  # SABnzbd rejects any request whose Host header is not whitelisted, with a
+  # bare 403. Out of the box the list holds only the container's own ID, so
+  # Sonarr calling http://sabnzbd:8080 is refused, and so is anything arriving
+  # through Caddy. Same class of problem as qBittorrent's host-header check.
+  sab -d mode=set_config -d section=misc -d keyword=host_whitelist \
+      --data-urlencode "value=sabnzbd,localhost,sab.${CADDY_DOMAIN}" >/dev/null
+  ok "host whitelist -> sabnzbd, localhost, sab.${CADDY_DOMAIN}"
+
+  # Incomplete and complete both live under /data/usenet, a sibling of
+  # torrents/ and media/, so finished downloads hardlink into the library
+  # instead of being copied (spec §3.3).
+  sab -d mode=set_config -d section=misc -d keyword=download_dir \
+      --data-urlencode "value=/data/usenet/incomplete" >/dev/null
+  sab -d mode=set_config -d section=misc -d keyword=complete_dir \
+      --data-urlencode "value=/data/usenet/complete" >/dev/null
+  ok "paths -> /data/usenet/{incomplete,complete}"
+
+  local c
+  for c in movies tv anime; do
+    sab -d mode=set_config -d section=categories -d keyword="$c" \
+        --data-urlencode "dir=$c" >/dev/null
+  done
+  ok "categories movies, tv, anime"
+
+  # The provider is what actually holds the articles; the indexers only say
+  # where they are. Without one, SABnzbd finds everything and downloads nothing.
+  if [[ -z "${USENET_USER:-}" ]]; then
+    warn "USENET_USER is blank — no news server configured."
+    warn "  Indexers find NZBs; a provider supplies the bytes. Until you add"
+    warn "  one, every Usenet download will fail. Set USENET_USER/USENET_PASS"
+    warn "  in .env and re-run this script."
+  else
+    sab -d mode=set_config -d section=servers -d keyword=provider \
+        --data-urlencode "host=${USENET_HOST}" \
+        -d "port=${USENET_PORT:-563}" \
+        -d "ssl=$([[ ${USENET_SSL:-true} == true ]] && echo 1 || echo 0)" \
+        -d "connections=${USENET_CONNECTIONS:-20}" \
+        --data-urlencode "username=${USENET_USER}" \
+        --data-urlencode "password=${USENET_PASS:-}" \
+        -d enable=1 >/dev/null
+    ok "news server -> ${USENET_HOST}:${USENET_PORT:-563} (${USENET_CONNECTIONS:-20} connections, SSL)"
+
+    # Prove the credentials actually work. Bad ones otherwise surface only as
+    # every download failing later, with nothing obvious pointing at the cause.
+    local test_result
+    test_result=$(sab -d mode=config -d name=test_server \
+      --data-urlencode "host=${USENET_HOST}" \
+      -d "port=${USENET_PORT:-563}" \
+      -d "ssl=$([[ ${USENET_SSL:-true} == true ]] && echo 1 || echo 0)" \
+      -d "connections=${USENET_CONNECTIONS:-20}" \
+      --data-urlencode "username=${USENET_USER}" \
+      --data-urlencode "password=${USENET_PASS:-}" 2>/dev/null \
+      | jq -r '.value.result' 2>/dev/null)
+
+    if [[ "$test_result" == "true" ]]; then
+      ok "news server connection verified"
+    else
+      warn "news server did NOT connect — check USENET_USER/USENET_PASS in .env"
+    fi
+  fi
+
+  # SABnzbd ships with no web UI login at all. It runs post-processing scripts,
+  # so an open UI is the same class of exposure as qBittorrent's external
+  # program setting. The *arrs authenticate with the API key, not these
+  # credentials, so setting them does not break the download client.
+  if [[ -n "${SAB_PASS:-}" ]]; then
+    sab -d mode=set_config -d section=misc -d keyword=username \
+        --data-urlencode "value=${SAB_USER:-admin}" >/dev/null
+    sab -d mode=set_config -d section=misc -d keyword=password \
+        --data-urlencode "value=${SAB_PASS}" >/dev/null
+    ok "web UI login enabled for '${SAB_USER:-admin}'"
+  else
+    warn "SAB_PASS is blank — the SABnzbd web UI has NO login."
+    warn "  Anyone who can reach the port can queue downloads and run scripts."
+  fi
+
+  unset -f sab
+}
+
+# ─── Bazarr ──────────────────────────────────────────────────────────────────
+
+provision_bazarr() {
+  step "Bazarr"
+
+  docker compose ps --status running --services | grep -qx bazarr || {
+    warn "bazarr is not running, skipping"; return 0
+  }
+
+  local bkey
+  bkey=$(docker compose exec -T bazarr \
+    sh -c "grep -A4 '^auth:' /config/config/config.yaml | grep apikey | awk '{print \$2}'" | tr -d '\r')
+  [[ -n "$bkey" ]] || { warn "could not read Bazarr's API key"; return 0; }
+
+  # Bazarr's API always requires its key; it is the web UI that ships open.
+  if [[ -z "${BAZARR_PASS:-}" ]]; then
+    warn "BAZARR_PASS is blank — the Bazarr web UI has NO login."
+    return 0
+  fi
+
+  local current
+  current=$(docker compose exec -T bazarr \
+    sh -c "grep -A4 '^auth:' /config/config/config.yaml | grep '  type:' | awk '{print \$2}'" | tr -d '\r')
+  if [[ "$current" == "form" ]]; then
+    skip "web UI login already enabled"
+    return 0
+  fi
+
+  curl -fsS -o /dev/null -X POST -H "X-API-KEY: ${bkey}" \
+    --data-urlencode "settings-auth-type=form" \
+    --data-urlencode "settings-auth-username=${BAZARR_USER:-admin}" \
+    --data-urlencode "settings-auth-password=${BAZARR_PASS}" \
+    "http://127.0.0.1:${BAZARR_PORT:-6767}/api/system/settings"
+
+  # Bazarr only picks the change up on restart.
+  docker compose restart bazarr >/dev/null 2>&1
+  ok "web UI login enabled for '${BAZARR_USER:-admin}' (bazarr restarted)"
+}
+
+# ─── Prowlarr indexers ───────────────────────────────────────────────────────
+
+# add_indexer <definition-name> [api-key]
+#
+# Public indexers take no key and are added as-is. Private ones need one, and
+# the caller is responsible for skipping when it is missing.
+add_indexer() {
+  local definition=$1 apikey=${2:-}
+
+  if arr GET "$PROWLARR_URL" "$PROWLARR_API_KEY" /api/v1/indexer \
+     | jq -e --arg n "$definition" 'any(.[]; .name == $n)' >/dev/null; then
+    skip "$definition exists"
+    return
+  fi
+
+  local body resp
+  body=$(arr GET "$PROWLARR_URL" "$PROWLARR_API_KEY" /api/v1/indexer/schema \
+    | jq --arg n "$definition" --arg k "$apikey" \
+        '.[] | select(.name == $n)
+         | if $k != "" then
+             .fields = ([.fields[] | if .name == "apiKey" then .value = $k else . end])
+           else . end
+         | . + {enable: true, appProfileId: 1, priority: 25}')
+  [[ -n "$body" ]] || { warn "$definition: no such definition in Prowlarr"; return; }
+
+  # Prowlarr validates the key against the indexer on save, so a bad key fails
+  # here rather than silently returning no results later.
+  if resp=$(curl -sS -X POST -H "X-Api-Key: $PROWLARR_API_KEY" \
+              -H 'Content-Type: application/json' -d "$body" \
+              "${PROWLARR_URL}/api/v1/indexer" 2>&1) \
+     && jq -e '.id' <<<"$resp" >/dev/null 2>&1; then
+    ok "$definition added"
+  else
+    warn "$definition rejected: $(jq -r 'if type=="array" then .[0].errorMessage else . end' <<<"$resp" 2>/dev/null || echo "$resp")"
+  fi
+}
+
 # ─── Root folders ────────────────────────────────────────────────────────────
 
 add_root_folder() {
@@ -196,40 +375,54 @@ add_root_folder() {
 
 # ─── Download client ─────────────────────────────────────────────────────────
 
-add_download_client() {
-  local app=$1 url=$2 key=$3 category_field=$4 category=$5
+# upsert_download_client <app> <url> <key> <name> <impl> <contract> <protocol>
+#                        <priority> <fields-json> <description>
+#
+# Priority is lowest-wins. SABnzbd is given 1 and qBittorrent 2 so Usenet is
+# preferred where both have a release — it is faster and carries no seeding
+# obligation. Torrents still win for anime, which Usenet covers poorly, because
+# that is where the releases actually are.
+upsert_download_client() {
+  local app=$1 url=$2 key=$3 name=$4 impl=$5 contract=$6 proto=$7 prio=$8 fields=$9 desc=${10}
+  local existing
+  existing=$(arr GET "$url" "$key" /api/v3/downloadclient | jq --arg n "$name" '.[] | select(.name == $n)')
 
-  if arr GET "$url" "$key" /api/v3/downloadclient | jq -e 'any(.[]; .name == "qBittorrent")' >/dev/null; then
-    skip "$app download client exists"
+  if [[ -n "$existing" ]]; then
+    if [[ $(jq -r '.priority' <<<"$existing") == "$prio" ]]; then
+      skip "$app: $name exists"
+    else
+      arr PUT "$url" "$key" "/api/v3/downloadclient/$(jq -r '.id' <<<"$existing")" \
+        "$(jq --argjson p "$prio" '.priority = $p' <<<"$existing")" >/dev/null
+      ok "$app: $name priority -> $prio"
+    fi
     return
   fi
 
-  # host is the container name, not localhost: the *arr reaches qBittorrent
-  # across the compose bridge network, not via a published port.
   local body
-  body=$(jq -n \
-    --arg user "$QBIT_USER" --arg pass "$QBIT_PASS" \
-    --arg cf "$category_field" --arg cat "$category" \
-    '{
-      enable: true,
-      protocol: "torrent",
-      priority: 1,
-      removeCompletedDownloads: true,
-      removeFailedDownloads: true,
-      name: "qBittorrent",
-      implementation: "QBittorrent",
-      configContract: "QBittorrentSettings",
-      fields: [
-        {name: "host",     value: "qbittorrent"},
-        {name: "port",     value: 8080},
-        {name: "useSsl",   value: false},
-        {name: "username", value: $user},
-        {name: "password", value: $pass},
-        {name: $cf,        value: $cat}
-      ]
-    }')
+  body=$(jq -n --arg name "$name" --arg impl "$impl" --arg contract "$contract" \
+               --arg proto "$proto" --argjson prio "$prio" --argjson fields "$fields" \
+    '{enable: true, protocol: $proto, priority: $prio,
+      removeCompletedDownloads: true, removeFailedDownloads: true,
+      name: $name, implementation: $impl, configContract: $contract,
+      fields: $fields}')
   arr POST "$url" "$key" /api/v3/downloadclient "$body" >/dev/null
-  ok "$app download client -> qbittorrent:8080, category '$category'"
+  ok "$app: $name -> $desc"
+}
+
+# host is the container name, not localhost: the *arrs reach the download
+# clients across the compose bridge network, not via a published port.
+qbit_fields() {
+  jq -n --arg user "$QBIT_USER" --arg pass "$QBIT_PASS" --arg cf "$1" --arg cat "$2" \
+    '[{name:"host",value:"qbittorrent"},{name:"port",value:8080},
+      {name:"useSsl",value:false},{name:"username",value:$user},
+      {name:"password",value:$pass},{name:$cf,value:$cat}]'
+}
+
+sab_fields() {
+  jq -n --arg key "$SAB_API_KEY" --arg cf "$1" --arg cat "$2" \
+    '[{name:"host",value:"sabnzbd"},{name:"port",value:8080},
+      {name:"useSsl",value:false},{name:"apiKey",value:$key},
+      {name:$cf,value:$cat}]'
 }
 
 # ─── Hardlinks ───────────────────────────────────────────────────────────────
@@ -284,29 +477,60 @@ wait_for Radarr   "$RADARR_URL/api/v3/system/status"   "$RADARR_API_KEY";   ok "
 wait_for Prowlarr "$PROWLARR_URL/api/v1/system/status" "$PROWLARR_API_KEY"; ok "Prowlarr ready"
 
 provision_qbittorrent
+provision_sabnzbd
+provision_bazarr
 
 step "Sonarr"
 add_root_folder Sonarr "$SONARR_URL" "$SONARR_API_KEY" /data/media/tv
 add_root_folder Sonarr "$SONARR_URL" "$SONARR_API_KEY" /data/media/anime
-# Sonarr has a single category field, so anime downloads land in the 'tv'
-# category too. Harmless: it is the same filesystem, and the TV/anime split
+# Sonarr has a single category field per client, so anime downloads land in the
+# 'tv' category too. Harmless: it is the same filesystem, and the TV/anime split
 # that matters happens at the root folder and Jellyfin library level.
-add_download_client Sonarr "$SONARR_URL" "$SONARR_API_KEY" tvCategory tv
+upsert_download_client Sonarr "$SONARR_URL" "$SONARR_API_KEY" \
+  SABnzbd Sabnzbd SabnzbdSettings usenet 1 "$(sab_fields tvCategory tv)" "sabnzbd:8080, category 'tv'"
+upsert_download_client Sonarr "$SONARR_URL" "$SONARR_API_KEY" \
+  qBittorrent QBittorrent QBittorrentSettings torrent 2 "$(qbit_fields tvCategory tv)" "qbittorrent:8080, category 'tv'"
 ensure_hardlinks Sonarr "$SONARR_URL" "$SONARR_API_KEY"
 
 step "Radarr"
 add_root_folder Radarr "$RADARR_URL" "$RADARR_API_KEY" /data/media/movies
-add_download_client Radarr "$RADARR_URL" "$RADARR_API_KEY" movieCategory movies
+upsert_download_client Radarr "$RADARR_URL" "$RADARR_API_KEY" \
+  SABnzbd Sabnzbd SabnzbdSettings usenet 1 "$(sab_fields movieCategory movies)" "sabnzbd:8080, category 'movies'"
+upsert_download_client Radarr "$RADARR_URL" "$RADARR_API_KEY" \
+  qBittorrent QBittorrent QBittorrentSettings torrent 2 "$(qbit_fields movieCategory movies)" "qbittorrent:8080, category 'movies'"
 ensure_hardlinks Radarr "$RADARR_URL" "$RADARR_API_KEY"
 
 step "Prowlarr"
 add_prowlarr_app Sonarr Sonarr SonarrSettings "http://sonarr:8989" "$SONARR_API_KEY"
 add_prowlarr_app Radarr Radarr RadarrSettings "http://radarr:7878" "$RADARR_API_KEY"
+# Usenet indexers are private and useless without a key, so skip them until
+# one is supplied rather than creating a broken entry.
+for pair in "NZBgeek:${NZBGEEK_API_KEY:-}" "NzbPlanet:${NZBPLANET_API_KEY:-}"; do
+  if [[ -z "${pair#*:}" ]]; then
+    skip "${pair%%:*}: no API key in .env, skipping"
+  else
+    add_indexer "${pair%%:*}" "${pair#*:}"
+  fi
+done
+
+# Public torrent indexers need no account, so they ship enabled by default.
+# These are what make anime work — Usenet covers it poorly, so without them
+# Sonarr finds almost nothing for an anime series.
+#
+# Note AnimeTosho, not "Anime Tosho": Prowlarr carries both, and despite being
+# labelled private the former needs no credentials and works, while the
+# semiprivate one fails to connect.
+IFS=',' read -r -a _indexers <<<"${TORRENT_INDEXERS:-Nyaa.si,SubsPlease,AnimeTosho,Tokyo Toshokan}"
+for definition in "${_indexers[@]}"; do
+  definition="${definition#"${definition%%[![:space:]]*}"}"   # trim leading space
+  definition="${definition%"${definition##*[![:space:]]}"}"   # trim trailing space
+  [[ -n "$definition" ]] && add_indexer "$definition"
+done
 
 step "Left for you"
 printf '  %s\n' \
-  "Prowlarr: add indexers — including Nyaa.si, AnimeTosho and SubsPlease," \
-  "          without which Sonarr will find no anime at all." \
+  "Prowlarr: the public torrent indexers are already added. Add any private" \
+  "          trackers by hand — they need per-site credentials." \
   "Bazarr:   connect to Sonarr and Radarr, choose subtitle providers." \
   "Jellyfin: create three libraries — /data/media/{movies,tv,anime}," \
   "          anime as its own library, and enable VAAPI on the target." \

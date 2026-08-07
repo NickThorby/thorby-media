@@ -19,7 +19,9 @@ it later.
 An 8 TB ext4 disk is mounted at `/mnt/disk1` and bind-mounted to `/data`. Every
 container mounts `/data:/data` — the same path on both sides, no exceptions —
 so that downloads and the library sit on one filesystem and Sonarr/Radarr import
-by hardlink instead of copying. Container config lives separately on the SSD
+by hardlink instead of copying. Both download protocols land under that root
+(`torrents/` and `usenet/`, siblings of `media/`), so imports hardlink whichever
+one a release came from. Container config lives separately on the SSD
 under `/opt/mediaserver`. Caddy binds only to the Tailscale interface and is the
 sole remote entry point; nothing is forwarded from the router. The `/data` bind
 mount is deliberate indirection: adding disks later means swapping it for a
@@ -89,6 +91,8 @@ smartd, sets UFW rules, and prints the values you need for the next step.
 | `CADDY_DOMAIN` | the machine's fully qualified `<host>.ts.net` |
 | `LAN_SUBNET` | your home network, e.g. `192.168.1.0/24` |
 | `SMTP_*`, `ALERT_EMAIL` | your mail relay — without these SMART alerts go nowhere |
+| `USENET_USER`, `USENET_PASS` | your news server (Eweka etc). Blank = no Usenet downloads |
+| `NZBGEEK_API_KEY`, `NZBPLANET_API_KEY` | Usenet indexer keys, from each site's profile page |
 
 `LAN_SUBNET` matters more than it looks: leave it blank and UFW blocks LAN
 clients from reaching Jellyfin, so Infuse on the Apple TV will not find it
@@ -161,9 +165,16 @@ The temporary admin password is printed to the container log on first start:
 
 ### 2. Prowlarr — `:9696`
 
-Enable authentication, then add indexers. Include the anime-specific ones —
-**Nyaa.si, AnimeTosho, SubsPlease**. General trackers carry very little anime;
-without these Sonarr will simply find nothing.
+`provision.sh` already added the public torrent indexers from `TORRENT_INDEXERS`
+— **Nyaa.si, SubsPlease, AnimeTosho, Tokyo Toshokan** — and the Usenet ones if
+their keys were in `.env`. They sync through to Sonarr and Radarr automatically.
+
+The anime ones are not optional: general trackers carry very little anime and
+Usenet covers it poorly, so without them Sonarr finds nothing for an anime
+series.
+
+Add any private trackers by hand here — they need per-site credentials. Never
+add indexers directly in Sonarr or Radarr; Prowlarr owns them.
 
 ### 3. Prowlarr → apps
 

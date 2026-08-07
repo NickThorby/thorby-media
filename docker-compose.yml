@@ -113,6 +113,27 @@ services:
       - "${BIND_ADDR:-0.0.0.0}:${QBIT_TORRENT_PORT:-6881}:6881/tcp"
       - "${BIND_ADDR:-0.0.0.0}:${QBIT_TORRENT_PORT:-6881}:6881/udp"
 
+  # ── Usenet download client ─────────────────────────────────────────────────
+  # Runs alongside qBittorrent, not instead of it. The *arrs speak both
+  # protocols and choose per release. Usenet carries TV and film well; anime
+  # coverage on Usenet is poor, so that stays on qBittorrent and Nyaa.
+  #
+  # Downloads land in /data/usenet/, a sibling of torrents/ and media/ on the
+  # same filesystem, so imports hardlink exactly as torrent ones do (spec §3.3).
+  sabnzbd:
+    image: lscr.io/linuxserver/sabnzbd:latest
+    container_name: sabnzbd
+    restart: unless-stopped
+    environment:
+      <<: *env
+    volumes:
+      - ${CONFIG_ROOT:-/opt/mediaserver}/sabnzbd:/config
+      - ${DATA_ROOT:-/data}:/data
+    # Container port is 8080, same as qBittorrent's — no clash, they are
+    # separate network namespaces. Only the host-side port has to differ.
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:${SAB_PORT:-8085}:8080"
+
   # ── Quality profile sync ───────────────────────────────────────────────────
   # Pulls Trash Guides profiles and anime release-group scores into Sonarr and
   # Radarr on a schedule (spec §8). Talks to their APIs only — no /data.

@@ -56,6 +56,8 @@ which also proves the two containers agree about `/data`:
 
 ```bash
 ./scripts/test-hardlinks.sh
+DOWNLOADER=sabnzbd SRC_DIR=/data/usenet/complete/tv LABEL=usenet \
+  ./scripts/test-hardlinks.sh    # the Usenet tree must pass too
 ```
 
 Then confirm it holds for a *real* import too. Grab something small, let Sonarr

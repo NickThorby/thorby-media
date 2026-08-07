@@ -50,6 +50,11 @@ services:
       - qbittorrent_config:/config
       - mediadata:/data
 
+  sabnzbd:
+    volumes: !override
+      - sabnzbd_config:/config
+      - mediadata:/data
+
   recyclarr:
     volumes: !override
       - recyclarr_config:/config
@@ -75,6 +80,7 @@ volumes:
   radarr_config:
   bazarr_config:
   qbittorrent_config:
+  sabnzbd_config:
   recyclarr_config:
   caddy_data:
   caddy_config:

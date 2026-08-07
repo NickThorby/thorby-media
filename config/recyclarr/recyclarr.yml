@@ -1,55 +1,71 @@
-# Recyclarr — syncs Trash Guides quality definitions, profiles and custom
+# Recyclarr — syncs TRaSH Guides quality definitions, profiles and custom
 # formats into Sonarr and Radarr on a daily schedule (spec §8).
 #
 # Mounted read-only at /config/recyclarr.yml. API keys come from the
 # environment rather than being written here, so this file stays committable —
-# set SONARR_API_KEY and RADARR_API_KEY in .env, reading each from the app's
-# Settings > General page after its first start.
+# they are pinned in .env and passed through by docker-compose.yml.
 #
-# Run a sync immediately instead of waiting for the cron:
+# The trash_ids below are lifted from the official Recyclarr templates. To see
+# the current ones, or to pick a different profile:
+#
+#   docker compose exec recyclarr recyclarr config list templates
+#   docker compose exec recyclarr recyclarr config create -t <name>
+#
+# Run a sync now instead of waiting for the daily cron:
 #   docker compose exec recyclarr recyclarr sync
+#   docker compose exec recyclarr recyclarr sync --preview   # dry run
 #
-# Preview what a template would change before it is applied:
-#   docker compose exec recyclarr recyclarr sync --preview
+# NOTE: Recyclarr also auto-loads any *.yml under /config/configs/. Files left
+# there by `config create` still contain placeholder credentials and will fail
+# the sync — delete them once you have copied what you need.
 
 sonarr:
-  main:
+  tv:
     base_url: http://sonarr:8989
     api_key: !env_var SONARR_API_KEY
 
+    # Episode size limits by quality. This is the real guard against a single
+    # release eating the disk — the profile decides what is allowed, these
+    # decide how big it may be.
     quality_definition:
       type: series
 
-    include:
-      # ── Standard TV ──────────────────────────────────────────────────────
-      - template: sonarr-quality-definition-series
-      - template: sonarr-v4-quality-profile-web-1080p
-      - template: sonarr-v4-custom-formats-web-1080p
+    quality_profiles:
+      - trash_id: 72dae194fc92bf828f32cde7744e51a1 # WEB-1080p
+        reset_unmatched_scores:
+          enabled: true
 
-      # ── Anime ────────────────────────────────────────────────────────────
-      # Creates a separate anime profile encoding community release-group
-      # rankings. Pair it with Series Type: Anime and the /data/media/anime
-      # root folder so absolute episode numbering is used and TVDB season
-      # splits stay out of the main TV library.
-      #
-      # NOTE (decisions.md Q5): these templates default to subtitle-preferred.
-      # For dual-audio, add the "Dual Audio" custom format with a positive
-      # score in a custom_formats block below — it materially changes which
-      # release groups win.
-      - template: sonarr-v4-quality-profile-anime
-      - template: sonarr-v4-custom-formats-anime
+    custom_format_groups:
+      add:
+        - trash_id: 158188097a58d7687dee647e04af0da3 # [Optional] Golden Rule HD
+        - trash_id: 74aff4168620ed49dcc67e92b2c2a5b4 # [Optional] Language Profiles
+        - trash_id: 85fae4a2294965b75710ef2989c850eb # [Streaming Services] HD/UHD boost
+        - trash_id: 59c3af66780d08332fdc64e68297098f # [Unwanted] Unwanted Formats
+
+        # Scores the anime streaming sources (Crunchyroll, Funimation and so
+        # on). Anime is overwhelmingly released at 1080p WEB, which is exactly
+        # what the WEB-1080p profile above targets, so the two pair well.
+        # Pair this with Series Type: Anime on the series itself, which is what
+        # switches Sonarr to absolute episode numbering.
+        - trash_id: f54985e5e96747cef58731f1cf4c9181 # [Streaming Services] Anime
 
 radarr:
-  main:
+  movies:
     base_url: http://radarr:7878
     api_key: !env_var RADARR_API_KEY
 
+    # sqp-streaming keeps 2160p sizes sane. The default `movie` definition
+    # allows full-disc remuxes, which is how an 80 GB grab happens.
     quality_definition:
-      type: movie
+      type: sqp-streaming
 
-    include:
-      - template: radarr-quality-definition-movie
-      - template: radarr-quality-profile-hd-bluray-web
-      - template: radarr-custom-formats-hd-bluray-web
+    quality_profiles:
+      # SQP-1 (2160p): good 4K encodes, remuxes and BR-DISK excluded.
+      # Roughly 15-30 GB a film rather than 60-90.
+      - trash_id: 5128baeb2b081b72126bc8482b2a86a0 # [SQP] SQP-1 (2160p)
+        reset_unmatched_scores:
+          enabled: true
 
-      # Anime films need no special handling beyond this (spec §8).
+    custom_format_groups:
+      add:
+        - trash_id: 15b1cf0b6f1a1493856a4355907affee # [Unwanted] Unwanted Formats SQP
