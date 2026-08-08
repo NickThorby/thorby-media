@@ -222,7 +222,30 @@ Create three libraries: `/data/media/movies`, `/data/media/tv`, and
 With Infuse as the primary client this rarely fires — Infuse direct-plays almost
 everything. It matters for browser and remote playback.
 
-### 9. Infuse
+### 9. Jellyseerr — `:5055`
+
+The front door for everyone who is not you. **Do step 8 first** — the wizard asks
+you to select Jellyfin libraries and offers nothing if none exist, which looks
+like a broken Continue button.
+
+Run the wizard once at `http://localhost:5055/setup`:
+
+- Sign in with your **Jellyfin admin account**
+- For the server address, enter the hostname **`jellyfin`** and port **8096** —
+  not `localhost` (that is Jellyseerr itself) and not the full URL (some fields
+  reject it with `INVALID_URL`). Leave **URL Base blank**; it is only for apps
+  served under a subpath.
+- Select the three libraries
+- **Stop there** — skip the Radarr and Sonarr steps
+
+Then `./scripts/provision.sh` connects Radarr and Sonarr with the right root
+folders and quality profiles, including a separate anime profile and directory so
+anime requests land in `/data/media/anime`.
+
+From then on nobody else needs Sonarr or Radarr at all: they search, click
+Request, and it appears.
+
+### 10. Infuse
 
 Add Jellyfin as a source (not an SMB share — the Jellyfin source is what
 preserves watch state, resume position, and library sync across devices). For
@@ -337,6 +360,7 @@ is not set to Anime.
 | `caddy/sites.caddy` | The reverse-proxy routes, shared by both environments |
 | `caddy/Caddyfile` | Production: `*.ts.net` certs from tailscaled |
 | `caddy/Caddyfile.dev` | Dev: internal CA |
+| `caddy/site/` | The landing page — Watch / Request, admin tools collapsed |
 | `config/recyclarr/recyclarr.yml` | Quality profile templates, incl. anime |
 | `scripts/provision.sh` | Wire the stack together over the apps' APIs — idempotent |
 | `scripts/validate.sh` | Static checks — run before every commit |

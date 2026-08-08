@@ -134,6 +134,28 @@ services:
     ports:
       - "${BIND_ADDR:-0.0.0.0}:${SAB_PORT:-8085}:8080"
 
+  # ── Requests ───────────────────────────────────────────────────────────────
+  # The household front door. Search, discover, and request — requests flow
+  # into Radarr and Sonarr automatically, and users sign in with their existing
+  # Jellyfin accounts. This is what keeps everyone else out of the *arr UIs.
+  #
+  # No /data mount: it only ever talks to APIs, never to media files.
+  jellyseerr:
+    image: fallenbagel/jellyseerr:latest
+    container_name: jellyseerr
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Africa/Johannesburg}
+      LOG_LEVEL: info
+    volumes:
+      - ${CONFIG_ROOT:-/opt/mediaserver}/jellyseerr:/app/config
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:${SEERR_PORT:-5055}:5055"
+    depends_on:
+      - jellyfin
+      - sonarr
+      - radarr
+
   # ── Quality profile sync ───────────────────────────────────────────────────
   # Pulls Trash Guides profiles and anime release-group scores into Sonarr and
   # Radarr on a schedule (spec §8). Talks to their APIs only — no /data.
@@ -173,6 +195,9 @@ services:
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/sites.caddy:/etc/caddy/sites.caddy:ro
+      # The landing page. Static files served by the proxy that is already
+      # running — no separate container just to serve two files.
+      - ./caddy/site:/srv/site:ro
       - ${CONFIG_ROOT:-/opt/mediaserver}/caddy/data:/caddydata
       - ${CONFIG_ROOT:-/opt/mediaserver}/caddy/config:/config
       - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock:ro
@@ -186,6 +211,7 @@ services:
       - radarr
       - bazarr
       - qbittorrent
+      - jellyseerr
 
   # ── VPN gateway — deferred, spec §7 ────────────────────────────────────────
   # Commented out until a provider with working port forwarding is chosen.

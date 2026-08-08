@@ -16,10 +16,13 @@
 #   ./scripts/provision.sh --init-keys  generate missing keys into .env, then exit
 #
 # What it does NOT do, and why:
-#   - Indexers. Public ones could be scripted, but private trackers need your
-#     own credentials. Add them in Prowlarr; they sync to the *arrs from there.
-#   - Bazarr. Its API is far weaker than the others and its config is a file.
-#   - Jellyfin libraries. The setup wizard is a one-off, three-minute job.
+#   - Private tracker indexers. They need per-site credentials. The public ones
+#     in TORRENT_INDEXERS are added automatically; add private ones in Prowlarr.
+#   - Jellyfin libraries. No API key exists until someone signs in, and the
+#     libraries have to exist before Jellyseerr's wizard can offer them.
+#   - Jellyseerr's first-run wizard. Its settings endpoints return 403 until an
+#     admin session exists, and the API key alone will not do. This script
+#     detects that state and prints the steps rather than pretending.
 #   - Quality profiles. That is Recyclarr's job, declaratively.
 
 set -euo pipefail
@@ -324,6 +327,119 @@ provision_bazarr() {
   ok "web UI login enabled for '${BAZARR_USER:-admin}' (bazarr restarted)"
 }
 
+# ─── Jellyseerr ──────────────────────────────────────────────────────────────
+
+provision_jellyseerr() {
+  step "Jellyseerr"
+
+  docker compose ps --status running --services | grep -qx jellyseerr || {
+    warn "jellyseerr is not running, skipping"; return 0
+  }
+
+  # The image ships /app/config/DOCKER as a "has a volume been mounted?" marker.
+  # A bind mount over an empty directory hides it, which is how production
+  # behaves. A *named* volume — what the dev override uses — is pre-populated
+  # from the image, so the marker is copied in and survives, and Jellyseerr
+  # wrongly warns that data will be lost on restart. Removing it is safe: the
+  # volume is real either way.
+  if docker compose exec -T jellyseerr test -f /app/config/DOCKER 2>/dev/null; then
+    docker compose exec -T jellyseerr rm -f /app/config/DOCKER
+    ok "removed stray volume marker (spurious 'not configured properly' warning)"
+  fi
+
+  local initialized
+  initialized=$(curl -fsS --max-time 15 \
+    "http://127.0.0.1:${SEERR_PORT:-5055}/api/v1/settings/public" 2>/dev/null \
+    | jq -r '.initialized // false')
+
+  if [[ "$initialized" != "true" ]]; then
+    # Jellyseerr gates its settings endpoints behind an admin session that only
+    # exists after the wizard, and the API key alone returns 403. So the first
+    # run genuinely cannot be automated — say so rather than pretend.
+    warn "Jellyseerr setup is not finished; nothing to configure yet."
+    warn ""
+    warn "  Jellyfin needs libraries BEFORE this will work — the wizard asks you"
+    warn "  to select them, and offers nothing if none exist."
+    warn ""
+    warn "  1. Jellyfin > Dashboard > Libraries, add three:"
+    warn "       Movies      -> /data/media/movies"
+    warn "       Shows       -> /data/media/tv"
+    warn "       Anime       -> /data/media/anime   (also type Shows)"
+    warn "  2. Jellyseerr > http://localhost:${SEERR_PORT:-5055}/setup"
+    warn "       sign in with your Jellyfin admin account, select the libraries"
+    warn "  3. Re-run this script to wire up Radarr and Sonarr"
+    return 0
+  fi
+  ok "setup complete — Jellyfin connected"
+
+  local skey seerr
+  skey=$(docker compose exec -T jellyseerr \
+    sh -c 'cat /app/config/settings.json' | jq -r '.main.apiKey')
+  [[ -n "$skey" && "$skey" != "null" ]] || { warn "could not read Jellyseerr's API key"; return 0; }
+  seerr="http://127.0.0.1:${SEERR_PORT:-5055}"
+
+  # jseerr <method> <path> [body]
+  jseerr() {
+    local m=$1 p=$2 b=${3:-}
+    if [[ -n "$b" ]]; then
+      curl -fsS -X "$m" -H "X-Api-Key: $skey" -H 'Content-Type: application/json' -d "$b" "${seerr}${p}"
+    else
+      curl -fsS -X "$m" -H "X-Api-Key: $skey" "${seerr}${p}"
+    fi
+  }
+
+  # Look the profile up by name rather than hardcoding an id — Recyclarr creates
+  # these, and the id depends on what order things happened in.
+  local rprofile sprofile rid sid
+  rprofile=${SEERR_RADARR_PROFILE:-"[SQP] SQP-1 (2160p)"}
+  sprofile=${SEERR_SONARR_PROFILE:-"WEB-1080p"}
+  rid=$(arr GET "$RADARR_URL" "$RADARR_API_KEY" /api/v3/qualityprofile \
+        | jq -r --arg n "$rprofile" '.[] | select(.name == $n) | .id')
+  sid=$(arr GET "$SONARR_URL" "$SONARR_API_KEY" /api/v3/qualityprofile \
+        | jq -r --arg n "$sprofile" '.[] | select(.name == $n) | .id')
+
+  if [[ -z "$rid" || -z "$sid" ]]; then
+    warn "quality profiles not found — run Recyclarr first:"
+    warn "  docker compose exec recyclarr recyclarr sync"
+    return 0
+  fi
+
+  if jseerr GET /api/v1/settings/radarr | jq -e 'any(.[]; .name == "Radarr")' >/dev/null; then
+    skip "Radarr already connected"
+  else
+    jseerr POST /api/v1/settings/radarr "$(jq -n \
+      --arg k "$RADARR_API_KEY" --argjson id "$rid" --arg pn "$rprofile" \
+      '{name:"Radarr", hostname:"radarr", port:7878, apiKey:$k, useSsl:false, baseUrl:"",
+        activeProfileId:$id, activeProfileName:$pn, activeDirectory:"/data/media/movies",
+        is4k:false, minimumAvailability:"released", isDefault:true, externalUrl:"",
+        syncEnabled:true, preventSearch:false, tagRequests:false}')" >/dev/null
+    ok "Radarr -> ${rprofile}, /data/media/movies"
+  fi
+
+  if jseerr GET /api/v1/settings/sonarr | jq -e 'any(.[]; .name == "Sonarr")' >/dev/null; then
+    skip "Sonarr already connected"
+  else
+    # Jellyseerr keeps a separate anime profile and directory, which is what
+    # routes anime requests to /data/media/anime instead of the TV library.
+    #
+    # activeLanguageProfileId must be a NUMBER even though Sonarr v4 removed
+    # language profiles entirely — passing null fails schema validation with
+    # "should be number".
+    jseerr POST /api/v1/settings/sonarr "$(jq -n \
+      --arg k "$SONARR_API_KEY" --argjson id "$sid" --arg pn "$sprofile" \
+      '{name:"Sonarr", hostname:"sonarr", port:8989, apiKey:$k, useSsl:false, baseUrl:"",
+        activeProfileId:$id, activeProfileName:$pn, activeDirectory:"/data/media/tv",
+        activeAnimeProfileId:$id, activeAnimeProfileName:$pn,
+        activeAnimeDirectory:"/data/media/anime",
+        activeLanguageProfileId:1, activeAnimeLanguageProfileId:1,
+        is4k:false, isDefault:true, enableSeasonFolders:true, externalUrl:"",
+        syncEnabled:true, preventSearch:false, tagRequests:false}')" >/dev/null
+    ok "Sonarr -> ${sprofile}, /data/media/tv + anime -> /data/media/anime"
+  fi
+
+  unset -f jseerr
+}
+
 # ─── Prowlarr indexers ───────────────────────────────────────────────────────
 
 # add_indexer <definition-name> [api-key]
@@ -479,6 +595,7 @@ wait_for Prowlarr "$PROWLARR_URL/api/v1/system/status" "$PROWLARR_API_KEY"; ok "
 provision_qbittorrent
 provision_sabnzbd
 provision_bazarr
+provision_jellyseerr
 
 step "Sonarr"
 add_root_folder Sonarr "$SONARR_URL" "$SONARR_API_KEY" /data/media/tv

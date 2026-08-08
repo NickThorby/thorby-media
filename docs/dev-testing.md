@@ -37,7 +37,12 @@ qBittorrent with `QBIT_USER`/`QBIT_PASS` from `.env`.
 
 Services are on loopback only: Jellyfin `:8096`, Prowlarr `:9696`, Sonarr
 `:8989`, Radarr `:7878`, Bazarr `:6767`, qBittorrent `:8081`, SABnzbd `:8085`,
-and Caddy on `:8443` serving `https://<service>.localhost:8443`.
+Jellyseerr `:5055`, and Caddy on `:8443` serving `https://<service>.localhost:8443`.
+
+The landing page is at **`https://localhost:8443`** — the bare domain. Its links
+are built from `location.host` at runtime, so they resolve to
+`https://sonarr.localhost:8443` here and `https://sonarr.<host>.ts.net` on the
+target, with no templating and no per-environment copy of the file.
 
 To check the Usenet hardlink tree as well as the torrent one:
 

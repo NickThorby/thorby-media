@@ -10,8 +10,21 @@
 # Upstreams are container names on the compose bridge network, so these must
 # stay in step with `container_name` in docker-compose.yml.
 
+# The front door. Static files, served by this same Caddy — no extra container.
+# Links inside the page are derived from location.host at runtime, so the one
+# file works at both <host>.ts.net and localhost:8443 without templating.
+{$CADDY_DOMAIN} {
+	root * /srv/site
+	file_server
+}
+
 jellyfin.{$CADDY_DOMAIN} {
 	reverse_proxy jellyfin:8096
+}
+
+# Requests — where everyone who is not the administrator should start.
+seerr.{$CADDY_DOMAIN} {
+	reverse_proxy jellyseerr:5055
 }
 
 sonarr.{$CADDY_DOMAIN} {

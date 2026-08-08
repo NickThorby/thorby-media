@@ -189,6 +189,51 @@ Unlike the *arrs, SABnzbd has no environment variable to pin its API key, so
 `provision.sh` reads it back out of `sabnzbd.ini` instead of asking you to copy
 it from the UI.
 
+### D16. Jellyseerr is the household front door, not the *arr UIs
+
+The request was a tiered navigation page so a non-technical household member
+could find her way around. Interrogating it changed the answer.
+
+Actual viewing happens through **Infuse on the Apple TV**, not a browser, so a
+menu whose top entry is "Library → Jellyfin" signposts a door she will rarely
+open. The only real browser journey is *"I want something we do not have"* —
+which is exactly what Jellyseerr is for. She searches, clicks Request, and it
+flows into Radarr and Sonarr with the profiles already configured, authenticated
+with her existing Jellyfin account.
+
+That means nobody but the administrator ever needs to see Sonarr or Radarr, and
+the thing to teach collapses to two words: **Watch** and **Request**.
+
+Jellyseerr touches no media files, only APIs, so it gets no `/data` mount and is
+not counted in `validate.sh`'s media-service assertion.
+
+### D17. The landing page is deliberately small, and has no container
+
+Two tiles and a collapsed disclosure, not the three-tier drill-down originally
+sketched. A nested menu would be more surface for a non-technical user to get
+lost in, serving a journey she will not take. The six admin tools are present
+behind `<details>` for the administrator and invisible by default.
+
+It is static HTML and CSS mounted into the **Caddy container already running**
+(`./caddy/site:/srv/site:ro`) and served at the bare `{$CADDY_DOMAIN}`, which
+previously 404'd. No extra service, no image to keep patched, no API keys in the
+browser, and it is versioned like everything else.
+
+No framework: for eight links and some CSS transitions, a build step earns
+nothing and costs a Node toolchain plus a question about whether `dist/` belongs
+in git. There are also **no external requests at all** — icons are inline SVG and
+fonts are system — so the page works over the tailnet with no internet.
+
+Links are derived at runtime from `location.host`:
+
+```js
+el.href = `${location.protocol}//${el.dataset.sub}.${location.host}`;
+```
+
+One file therefore works at both `<host>.ts.net` and `localhost:8443`, port
+included. A server-side template on `{$CADDY_DOMAIN}` would lose the dev port,
+since that variable carries no port.
+
 ---
 
 ## Open

@@ -83,6 +83,9 @@ caddy/
   sites.caddy             the routes — shared by both environments
   Caddyfile               production: ts.net certs from tailscaled
   Caddyfile.dev           dev: internal CA via local_certs
+  site/                   the landing page, served by Caddy at the bare domain
+    index.html            Watch / Request tiles + collapsed admin disclosure
+    style.css             no framework, no build step, no external requests
 config/
   recyclarr/recyclarr.yml quality profile templates (tracked, not ignored)
 scripts/
