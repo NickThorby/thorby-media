@@ -1,10 +1,8 @@
-# Production stack for the Debian target. This file alone is the complete
-# spec §4 deployment — on the target, `docker compose up -d` needs no flags.
+# The stack for the Debian target. This file alone is the complete spec §4
+# deployment — `docker compose up -d` needs no flags and no override files.
 #
-# The macOS dev box layers docker-compose.dev.yml on top via COMPOSE_FILE in
-# .env. Production is deliberately the default: forgetting COMPOSE_FILE on
-# Debian yields the correct stack, while forgetting it on the Mac fails loudly
-# on the missing /dev/dri rather than silently disabling hardware transcoding.
+# There is one machine and one compose file. Everything that differs between
+# installations comes from .env; nothing host-specific is written down here.
 
 name: mediaserver
 
@@ -65,7 +63,7 @@ services:
     devices:
       - /dev/dri:/dev/dri
     group_add:
-      - "${RENDER_GID:?RENDER_GID is unset. On the target run: getent group render. On the Mac, uncomment the MAC DEV block in .env}"
+      - "${RENDER_GID:?RENDER_GID is unset. Run: getent group render}"
     volumes:
       - ${CONFIG_ROOT:-/opt/mediaserver}/jellyfin:/config
       - ${DATA_ROOT:-/data}:/data

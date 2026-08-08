@@ -14,33 +14,29 @@ anything here disagrees with the spec, the spec wins — fix this file.
 This repo holds **configuration and scripts only**. No media, no container
 state, no secrets.
 
-## Two machines — read this before running anything
+## One machine
 
-Development happens on a macOS workstation. The stack runs on a completely
-different machine. These are never the same host.
+There is a single target box and everything here is written for it. There is no
+dev stack, no compose override and no second Caddyfile — a macOS split existed
+until the box was built and was removed with it.
 
-| | Dev box (where you are now) | Target box |
-|---|---|---|
-| OS | macOS | Debian 13 (Trixie), minimal server |
-| Docker | Docker Desktop | docker-ce from Docker's official repo |
-| CPU | Apple Silicon / Intel Mac | Intel i7-8700K, Quick Sync iGPU |
-| Media disk | none | 8 TB ext4 at `/mnt/disk1`, bind-mounted to `/data` |
-| Access | local | public 80/443 for three names; Tailscale for admin |
+| | Target box |
+|---|---|
+| OS | Debian 13 (Trixie), minimal server |
+| Docker | docker-ce from Docker's official repo |
+| CPU | Intel i7-8700K, Quick Sync iGPU |
+| Media disk | 8 TB ext4 at `/mnt/disk1`, bind-mounted to `/data` |
+| Access | public 80/443 for three names; Tailscale for admin |
 
-**Do not, on the dev box:**
+The scripts assume Debian: bash 5, GNU coreutils, `systemd`, `ufw`, and a Docker
+daemon. `setup.sh` refuses to run anywhere else, and `validate.sh` needs GNU
+`stat` and a working `docker`, so neither is portable to a macOS workstation.
+Run them on the box.
 
-- Run `setup.sh`. It creates system users, writes `/etc/fstab`, configures
-  `smartd`, and sets UFW rules. It is written for Debian and will either fail or
-  do damage here.
-- Assume `/dev/dri`, `/mnt/disk1`, `/data`, the `media` user, or the `render`
-  group exist. None of them do.
-- Claim hardware transcoding, hardlinking, SMART, or Tailscale binding has been
-  verified. Those are target-box checks — see
-  [`docs/verification.md`](docs/verification.md).
-
-When something can only be checked on the target, say so plainly rather than
-approximating it locally. See [`docs/dev-testing.md`](docs/dev-testing.md) for
-what *is* testable here.
+Some properties can only be established there at all — hardware transcoding,
+hardlinking across the real filesystem, SMART, the firewall rules. Never claim
+one of those has been verified from a file; the checklist for them is
+[`docs/verification.md`](docs/verification.md).
 
 ## Invariants
 
@@ -90,10 +86,10 @@ requiring explicit justification.
    forwarding is chosen (§7). Do not uncomment it speculatively.
 
 7. **The landing page makes zero external requests.** Icons are inline SVG, the
-   type is a system stack. A CDN link or a webfont renders perfectly on the dev
-   Mac, which has internet, and a broken page for a tailnet client, which is not
-   guaranteed any — so the failure surfaces on the target, in front of the
-   household, and never here. `validate.sh` asserts it (decisions.md D17, D24).
+   type is a system stack. A CDN link or a webfont renders perfectly for a
+   client with internet and breaks for one without — a remote-access client is
+   not guaranteed a route out — so the failure surfaces in front of the
+   household. `validate.sh` asserts it (decisions.md D17, D24).
 
 ## Repo layout
 
@@ -101,13 +97,11 @@ requiring explicit justification.
 CLAUDE.md                 this file
 README.md                 operator-facing: build, configure, migrate
 .env.example              template; the real .env is gitignored
-docker-compose.yml        the production stack (deliverable §9.1)
-docker-compose.dev.yml    macOS-only override, layered via COMPOSE_FILE
+docker-compose.yml        the stack (deliverable §9.1)
 setup.sh                  host provisioning for Debian (deliverable §9.4)
 caddy/
-  sites.caddy             the routes — shared by both environments
-  Caddyfile               production: Let's Encrypt over HTTP-01
-  Caddyfile.dev           dev: internal CA via local_certs
+  Caddyfile               certificate issuance only; imports sites.caddy
+  sites.caddy             the routes, plus the `common` and `private_only` snippets
   site/                   the landing page, served by Caddy at the bare domain
                           — no framework, no build step, no external requests
     index.html            Watch / Request tiles, collapsed admin disclosure,
@@ -126,29 +120,22 @@ scripts/
 docs/
   spec.md                 source of truth — the build specification
   decisions.md            implementation decisions + open questions
-  dev-testing.md          what can and cannot be validated on macOS
   verification.md         the acceptance checklist, run on the target
   review-2026-08.md       security and architecture review + what it changed
 ```
 
 ## Conventions
 
-- **Compose:** no top-level `version:` key — it is obsolete. Two files:
-  `docker-compose.yml` is the production stack and the default, and
-  `docker-compose.dev.yml` is layered on top only on macOS, via `COMPOSE_FILE`
-  in `.env`. **Production is deliberately the default** — forgetting the
-  override on Debian yields a correct stack, while forgetting it on the Mac
-  fails loudly on the missing `/dev/dri`. Never invert that. New services go in
-  the production file first; add a dev override only if macOS cannot run it.
-- **Compose interpolates before it merges override files.** A `${VAR:?}` in the
-  base file errors even when the dev override `!reset`s the field that used it —
-  which is why `.env`'s Mac block still sets a dummy `RENDER_GID`.
+- **Compose:** no top-level `version:` key — it is obsolete. **One file.**
+  `docker-compose.yml` is the whole stack and `docker compose up -d` needs no
+  flags. Do not reintroduce an override file; if something needs to vary, it
+  varies through `.env`.
 - **Images:** `lscr.io/linuxserver/*` for the app stack (they provide the
   `PUID`/`PGID`/`TZ` contract this design depends on), `caddy:alpine` for the
   proxy. Do not substitute other maintainers' images.
 - **Everything host-specific comes from `.env`** — UID/GID, timezone, paths,
-  tailnet hostname, render GID. No values hardcoded in `docker-compose.yml` that
-  differ between the dev and target boxes.
+  render GID, LAN subnet, remote-access settings. No host-specific value is
+  hardcoded in `docker-compose.yml`.
 - **`setup.sh` must be idempotent** and safe to re-run. Guard every mutation
   (user creation, fstab lines, UFW rules) with an existence check. It edits
   `/etc/fstab`, so it must never blindly append a duplicate.
@@ -169,9 +156,9 @@ of that app. Placeholders in tracked files use the spec's own notation:
 If you need a real value to make progress, ask for it — don't invent one that
 looks plausible and gets copy-pasted into production.
 
-## Validating changes here
+## Validating changes
 
-One command, works on macOS and Debian, needs nothing running:
+One command, needs nothing running:
 
 ```bash
 ./scripts/validate.sh
@@ -182,10 +169,14 @@ services mount `/data` and that they all resolve to **one** source (invariant 1
 and 2, which no runtime error would catch), confirms Gluetun is still commented
 out, checks the exposure invariants (every published port names an interface,
 Caddy is not on a wildcard, the *arr auth env vars are present, `.env` is 0600),
-validates both Caddyfiles, checks the landing page (invariant 7 — no external
+validates the Caddyfile, checks the landing page (invariant 7 — no external
 `src`/`href`, no CSS `url()` that is not a `data:` URI, and the tiles' `data-sub`
 set still equals the `sites.caddy` route set), and shellchecks every script. Run
 it before every commit.
+
+It needs GNU `stat`, bash 5 and a Docker daemon, so it runs on the box rather
+than on a workstation. `shellcheck` and `caddy` are not installed as packages;
+`validate.sh` shells out to `koalaman/shellcheck` and `caddy:alpine`.
 
 With the stack up, two more:
 
@@ -197,28 +188,41 @@ With the stack up, two more:
 `test-hardlinks.sh` writes a file as qBittorrent and links it as Sonarr, then
 compares device, inode and link count.
 
-`setup.sh` cannot run here, but its logic can be exercised in a container:
+`setup.sh` mutates the host, so rehearse it in a throwaway container rather than
+on the live box:
 
 ```bash
 docker run --rm -v "$PWD:/repo:ro" debian:trixie \
   bash -c 'cd /repo && bash setup.sh --dry-run --skip-packages --disk /dev/sdX'
 ```
 
-Note that `--dry-run` skips the steps that append to files (`DOCKER-USER` rules),
-so it does not exercise everything. To reach those, install `ufw` and
-`openssh-server` in the container, stub `systemctl`, set `LAN_SUBNET`, and run
-without `--dry-run` — and run it **twice**, since idempotency is the property
-most likely to be wrong.
+Note that `--dry-run` skips the steps that append to files (`DOCKER-USER` rules,
+`sysctl.d`, `modules-load.d`), so it does not exercise everything. To reach
+those, install `ufw` and `openssh-server` in the container, stub `systemctl`,
+set `LAN_SUBNET`, and run without `--dry-run` — **twice**, since idempotency is
+the property most likely to be wrong:
 
-`shellcheck` and `yamllint` are not installed natively; `validate.sh` uses the
-container forms.
+```bash
+docker run --rm -v "$PWD:/repo:ro" debian:trixie bash -c '
+  apt-get update -qq && apt-get install -y -qq ufw openssh-server >/dev/null
+  printf "#!/bin/sh\nexit 0\n" > /usr/bin/systemctl && chmod +x /usr/bin/systemctl
+  cd /repo && cp -r . /work && cd /work
+  echo "LAN_SUBNET=192.168.1.0/24" >> .env
+  bash setup.sh --skip-packages; bash setup.sh --skip-packages
+  grep -c "BEGIN MEDIASERVER DOCKER-USER" /etc/ufw/after.rules'
+```
+
+That last `grep` must print `1`, not `2`.
 
 ## Current state
 
-All spec §9 deliverables are implemented. Verified on the Mac: both compose
-layerings render correctly, all ten containers start and reach healthy, every
-web UI responds directly and through Caddy, the hardlink test passes on the
-named volume, and `audit-auth.sh` passes on all eight apps.
+All spec §9 deliverables are implemented. Before the Debian box existed, the
+stack was exercised on a macOS workstation with a compose override: all ten
+containers started and reached healthy, every web UI responded directly and
+through Caddy, the hardlink test passed, and `audit-auth.sh` passed on all eight
+apps. **That override is gone**, and none of those results were obtained on this
+hardware — treat them as prior evidence that the design works, not as
+verification of this box.
 
 A security and architecture review in August 2026 is written up in
 [`docs/review-2026-08.md`](docs/review-2026-08.md), with what it changed and what
@@ -231,9 +235,9 @@ because they invalidate reasonable-sounding assumptions:
   is applied at runtime without being written to disk, so the file disagrees
   with the running app. Ask the API (D18).
 
-Untested until the Debian box exists — do not report these as working: hardware
-transcoding, Let's Encrypt issuance, the router port forward, the UFW and
-`DOCKER-USER` rules (including the new 80/443 returns), the fail2ban web jails,
+Untested on this hardware — do not report these as working: hardware
+transcoding, Let's Encrypt issuance, the router port forwards, the UFW and
+`DOCKER-USER` rules (including the 80/443 returns), the fail2ban web jails,
 unattended-upgrades, smartd delivery, and unattended boot. They are tracked in
 [`docs/verification.md`](docs/verification.md); open questions are in
 [`docs/decisions.md`](docs/decisions.md).

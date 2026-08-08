@@ -5,10 +5,9 @@
 *.pem
 secrets/
 
-# Runtime state. Container config normally lives outside the repo (at
-# CONFIG_ROOT, /opt/mediaserver on the target) and the dev stack uses named
-# Docker volumes, so nothing should land here — these are a safety net for a
-# mistyped DATA_ROOT or CONFIG_ROOT pointing inside the working tree.
+# Runtime state. Container config lives outside the repo, at CONFIG_ROOT
+# (/opt/mediaserver), so nothing should land here — these are a safety net for
+# a mistyped DATA_ROOT or CONFIG_ROOT pointing inside the working tree.
 /data/
 /appdata/
 /dev/

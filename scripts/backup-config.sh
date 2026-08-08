@@ -133,19 +133,12 @@ step "Retention"
 
 # The stamp is YYYYmmdd-HHMMSS, so a reverse lexical sort is newest-first
 # without having to stat anything.
-#
-# Built with a read loop rather than mapfile: macOS ships bash 3.2, which has
-# neither mapfile nor safe empty-array expansion under `set -u`. This script is
-# for the Debian target, but it has to be runnable on the dev box to be testable
-# at all — same idiom validate.sh already uses.
-existing=()
-while IFS= read -r f; do
-  existing+=("$f")
-done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'mediaserver-config-*.tar.gz' | sort -r)
+mapfile -t existing \
+  < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'mediaserver-config-*.tar.gz' | sort -r)
 
 pruned=0
 i=0
-for f in ${existing+"${existing[@]}"}; do
+for f in "${existing[@]}"; do
   if [[ $i -ge $BACKUP_KEEP ]]; then
     rm -f "$f"
     ok "pruned $(basename "$f")"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Static validation. Runs unchanged on macOS and Debian, needs nothing running.
+# Static validation. Needs nothing running, but does need Docker and GNU
+# coreutils — it is a Debian-target script like everything else here.
 #
 # Beyond syntax, this enforces the spec §4.1 volume rule mechanically: every
 # media-touching service must mount the SAME source at the SAME container path
@@ -139,7 +140,7 @@ for svc in sonarr radarr prowlarr; do
 done
 
 # .env holds every password in the stack plus the Usenet provider account.
-env_mode=$(stat -f '%Lp' .env 2>/dev/null || stat -c '%a' .env)
+env_mode=$(stat -c '%a' .env)
 if [[ "$env_mode" == "600" ]]; then
   ok ".env is mode 0600"
 else
@@ -150,24 +151,23 @@ fi
 echo
 echo "Caddy"
 
-for cf in Caddyfile Caddyfile.dev; do
-  if out=$(docker run --rm -e PUBLIC_DOMAIN=validate.example.com \
-             -e ACME_EMAIL=validate@example.com \
-             -v "$PWD/caddy:/etc/caddy:ro" caddy:alpine \
-             caddy validate --config "/etc/caddy/$cf" 2>&1); then
-    ok "caddy/$cf valid"
-  else
-    bad "caddy/$cf invalid"
-    tail -5 <<<"$out" | indent
-  fi
-done
+if out=$(docker run --rm -e PUBLIC_DOMAIN=validate.example.com \
+           -e ACME_EMAIL=validate@example.com \
+           -v "$PWD/caddy:/etc/caddy:ro" caddy:alpine \
+           caddy validate --config /etc/caddy/Caddyfile 2>&1); then
+  ok "caddy/Caddyfile valid (sites.caddy imported)"
+else
+  bad "caddy/Caddyfile invalid"
+  tail -5 <<<"$out" | indent
+fi
 
 echo
 echo "Landing page"
 
-# Invariant 7. A CDN link or a webfont here renders perfectly on this Mac, which
-# has internet, and a broken page for a client that has none. That is a silent
-# failure in front of the household, so it gets an assertion (D17, D24).
+# Invariant 7. A CDN link or a webfont here renders perfectly for a client with
+# internet, and breaks for one without — a tunnel client on a split tunnel is
+# not guaranteed a route out. That is a silent failure in front of the
+# household, so it gets an assertion (D17, D24).
 #
 # Scoped to things the browser FETCHES — every src=, and href= on a <link>. An
 # <a href> is a place the user can go, not a request the page makes, and the
@@ -258,7 +258,7 @@ echo "Shell"
 
 shell_files=()
 [[ -f setup.sh ]] && shell_files+=(setup.sh)
-while IFS= read -r f; do shell_files+=("$f"); done \
+mapfile -t -O "${#shell_files[@]}" shell_files \
   < <(find scripts -name '*.sh' -type f 2>/dev/null | sort)
 
 if [[ ${#shell_files[@]} -eq 0 ]]; then

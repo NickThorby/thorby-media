@@ -78,7 +78,7 @@ if [[ "${1:-}" == "--init-keys" ]]; then
   # .env now holds every password in the stack plus the Usenet provider account.
   # It is created by `cp .env.example .env`, which inherits the umask — usually
   # 0644. Nothing else in the deploy narrows it.
-  if [[ "$(stat -f '%Lp' .env 2>/dev/null || stat -c '%a' .env)" != "600" ]]; then
+  if [[ "$(stat -c '%a' .env)" != "600" ]]; then
     chmod 600 .env
     ok "tightened .env to 0600"
   fi
@@ -324,54 +324,6 @@ provision_sabnzbd() {
   fi
 
   unset -f sab
-
-  sab_fix_local_ranges
-}
-
-# With inet_exposure=0 SABnzbd serves only callers it considers local, judged by
-# the source address of the request. That works on the target, where Docker's
-# DNAT preserves the real client IP, and fails on macOS, where Docker Desktop's
-# port forwarder rewrites every caller — loopback, LAN and Caddy alike — to one
-# synthetic address outside RFC1918. SABnzbd then answers 403 to everything and
-# the web UI is unreachable from anywhere.
-#
-# So: probe it, and only widen local_ranges if the probe actually fails. On the
-# target the probe returns a login redirect and this is a no-op, which is why it
-# is detection rather than a platform check.
-#
-# local_ranges is declared protect=True, so set_config silently ignores it and
-# reports success — the ini is the only way in, and SABnzbd rewrites the ini on
-# shutdown, so the container has to be stopped rather than restarted.
-sab_fix_local_ranges() {
-  local url="http://127.0.0.1:${SAB_PORT:-8085}/"
-  [[ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 "$url" 2>/dev/null)" == "403" ]] || return 0
-
-  warn "SABnzbd is refusing every caller as non-local (Docker Desktop rewrites"
-  warn "  the source address). Widening misc/local_ranges to the private ranges."
-
-  local vol
-  vol=$(docker compose ps -q sabnzbd | xargs -r docker inspect \
-        --format '{{range .Mounts}}{{if eq .Destination "/config"}}{{.Name}}{{end}}{{end}}')
-  [[ -n "$vol" ]] || { warn "  could not find SABnzbd's config volume — skipped"; return 0; }
-
-  docker compose stop sabnzbd >/dev/null 2>&1
-  docker run --rm -v "$vol:/config" alpine \
-    sed -i 's|^local_ranges = .*|local_ranges = 127.,10.,172.,192.168.|' /config/sabnzbd.ini
-  docker compose start sabnzbd >/dev/null 2>&1
-
-  local waited=0
-  while (( waited < 60 )); do
-    [[ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$url" 2>/dev/null)" == "403" ]] || break
-    sleep 3
-    waited=$(( waited + 3 ))
-  done
-
-  if [[ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 "$url" 2>/dev/null)" == "403" ]]; then
-    warn "  still 403 — check the address it sees:"
-    warn "    docker compose exec sabnzbd grep -i refused /config/logs/sabnzbd.log"
-  else
-    ok "local_ranges widened; the web UI answers again (sabnzbd restarted)"
-  fi
 }
 
 # ─── Bazarr ──────────────────────────────────────────────────────────────────
@@ -421,17 +373,6 @@ provision_jellyseerr() {
   docker compose ps --status running --services | grep -qx jellyseerr || {
     warn "jellyseerr is not running, skipping"; return 0
   }
-
-  # The image ships /app/config/DOCKER as a "has a volume been mounted?" marker.
-  # A bind mount over an empty directory hides it, which is how production
-  # behaves. A *named* volume — what the dev override uses — is pre-populated
-  # from the image, so the marker is copied in and survives, and Jellyseerr
-  # wrongly warns that data will be lost on restart. Removing it is safe: the
-  # volume is real either way.
-  if docker compose exec -T jellyseerr test -f /app/config/DOCKER 2>/dev/null; then
-    docker compose exec -T jellyseerr rm -f /app/config/DOCKER
-    ok "removed stray volume marker (spurious 'not configured properly' warning)"
-  fi
 
   local initialized
   initialized=$(curl -fsS --max-time 15 \

@@ -62,7 +62,8 @@ host-specific value — `PUID`, `PGID`, `TZ`, `RENDER_GID`, `TAILSCALE_IP`,
 ### D6. Config root is `${CONFIG_ROOT}`, defaulting to `/opt/mediaserver`
 
 Per §4, container configs live on the SSD, separate from the media disk. Kept as
-a variable so the dev box can point it somewhere harmless.
+a variable rather than a literal so a rebuild can stage it elsewhere without
+editing the compose file.
 
 ### D7. Image tags: `:latest`
 
@@ -74,6 +75,11 @@ automatic — no Watchtower. Back up `${CONFIG_ROOT}` before pulling.
 Revisit if an unattended update ever breaks the stack.
 
 ### D8. Two compose files, with production as the default
+
+**Retired.** The macOS dev box is no longer part of the deployment, and
+`docker-compose.dev.yml` was deleted with it. There is one compose file and
+`docker compose up -d` takes no flags. The reasoning below is kept because the
+asymmetry argument is worth re-reading if an override is ever proposed again.
 
 `docker-compose.yml` is the complete Debian stack. `docker-compose.dev.yml`
 strips what macOS cannot provide and is layered on only by setting
@@ -90,6 +96,10 @@ in the base errors even when the override resets that field, which is why the
 Mac block in `.env` still sets a dummy `RENDER_GID`.
 
 ### D9. The dev stack puts `/data` on a named Docker volume
+
+**Retired with D8.** `/data` is a bind mount onto the real disk on the only
+machine that now exists, so the hardlink test measures the real filesystem
+rather than a stand-in for it.
 
 Not a host bind mount. A named volume lives on ext4 inside Docker's Linux VM, so
 inodes, link counts and PUID/PGID behave as they will on the target. macOS
@@ -441,18 +451,18 @@ probe cannot tell a broken service from an untrusted certificate from a client
 that is off the tailnet, and a red dot on the household's home page would
 generate a support call for a problem that does not exist. If every probe in a
 group fails the dots are hidden outright — an instrument that is not working
-should not report. **In development every probe fails**: the page is loaded at
-`https://localhost:8443` after accepting one certificate, but
-`sonarr.localhost:8443` is a different origin with its own untrusted certificate
-that was never accepted. See `dev-testing.md` for trusting the CA.
+should not report. (This bit hard on the old dev stack, where every probe failed
+against the internal CA; on the target the certificates are real and the only
+group that can legitimately go dark is Manage.)
 
 **`validate.sh` now asserts D17 mechanically.** Four checks: no external `src`
 or `href`, no CSS `url()` that is not a `data:` URI or a fragment, the
 `data-sub` set equals the `sites.caddy` route set (spec §5.2 — a stale link
 fails at TLS, not with a 404), and nothing but html/css/js under `caddy/site`.
 The first is the one that matters, and it is why zero external requests is now
-invariant 7 in `CLAUDE.md`: a CDN link renders perfectly on the dev Mac, which
-has internet, and a broken page on the tailnet, which is not guaranteed any.
+invariant 7 in `CLAUDE.md`: a CDN link renders perfectly for a client with
+internet and breaks for one without, and a remote-access client is not
+guaranteed a route out.
 
 ### D25. Two doors: a public one for the household, Tailscale for the administrator
 
@@ -496,10 +506,9 @@ step.
 RFC1918 and the Tailscale CGNAT range with a header, and the landing page
 template renders the admin section only when it is present. Say it plainly
 wherever it comes up: the boundary is the absent route, not the absent link.
-The snippet lives in each Caddyfile rather than the shared routes file because
-the dev box needs a wider range — Docker Desktop rewrites every client address
-to a synthetic `172.67.x`, which is outside RFC1918 since the /12 stops at
-172.31. Same quirk that made SABnzbd refuse every caller.
+The snippet originally lived in each Caddyfile rather than the shared routes
+file because the dev box needed a wider range; with one environment it has moved
+into `sites.caddy` alongside the routes that import it.
 
 Admin links are `<lan-ip>:<port>`, templated from the environment rather than
 written into the page, so `.env` stays the only place a host port is recorded.

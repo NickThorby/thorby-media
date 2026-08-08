@@ -8,11 +8,11 @@ Full requirements are in [`docs/spec.md`](docs/spec.md). This README is the
 operator's guide: how to bring it up, configure it in the right order, and grow
 it later.
 
-> **Status.** All deliverables are implemented and validated on a macOS dev box.
-> Hardware transcoding, Let's Encrypt issuance, the router port forward, UFW and
-> `DOCKER-USER`, the fail2ban web jails, smartd delivery, and unattended boot are
-> **untested** — they need the Debian machine.
-> See [`docs/verification.md`](docs/verification.md).
+> **Status.** All deliverables are implemented. Hardware transcoding, Let's
+> Encrypt issuance, the router port forwards, UFW and `DOCKER-USER`, the
+> fail2ban web jails, smartd delivery, and unattended boot are **untested on
+> this hardware** — work through
+> [`docs/verification.md`](docs/verification.md) during bring-up.
 
 ---
 
@@ -61,12 +61,12 @@ Clone the repo onto the target, then:
 cp .env.example .env
 ```
 
-Leave the MAC DEV block at the bottom commented out — the production values are
-the defaults, so a Debian box needs no override file and no flags.
+Fill it in as you go — `setup.sh` prints most of the host-specific values.
+There is one compose file, so nothing here needs flags or an override.
 
 **1. Dry run first.** `setup.sh` rewrites `/etc/fstab`, creates a system user,
-enables a firewall and can format a disk. None of that can be rehearsed on the
-dev machine, so start by looking at exactly what it intends to do:
+enables a firewall and can format a disk, so start by looking at exactly what
+it intends to do:
 
 ```bash
 sudo ./setup.sh --dry-run --disk /dev/sdX
@@ -179,14 +179,6 @@ a second time for the Usenet tree, as
 [`docs/verification.md`](docs/verification.md) shows.
 
 Then work through [`docs/verification.md`](docs/verification.md).
-
-### Developing on another machine
-
-The macOS dev workflow is in [`docs/dev-testing.md`](docs/dev-testing.md). In
-short: uncomment the MAC DEV block in `.env` and `docker compose up -d`. That
-layers `docker-compose.dev.yml`, which strips the `/dev/dri` passthrough and
-puts `/data` on a named volume so hardlinks and permissions behave as they do on
-ext4.
 
 ---
 
@@ -467,13 +459,11 @@ stopped container, because Caddy answers 502 and the probe cannot read the statu
 
 | Path | What |
 |---|---|
-| `docker-compose.yml` | The production stack. Complete on its own; no flags needed on Debian |
-| `docker-compose.dev.yml` | macOS-only override, layered via `COMPOSE_FILE` in `.env` |
-| `.env.example` | Every host-specific value, with a commented Mac block |
+| `docker-compose.yml` | The whole stack. Complete on its own; no flags, no override |
+| `.env.example` | Every host-specific value |
 | `setup.sh` | Debian host provisioning — idempotent, `--dry-run`, opt-in disk format |
-| `caddy/sites.caddy` | The reverse-proxy routes, shared by both environments |
-| `caddy/Caddyfile` | Production: Let's Encrypt over HTTP-01 |
-| `caddy/Caddyfile.dev` | Dev: internal CA |
+| `caddy/Caddyfile` | Certificate issuance — Let's Encrypt over HTTP-01 |
+| `caddy/sites.caddy` | The reverse-proxy routes and the snippets they import |
 | `caddy/site/` | The landing page — Watch / Request, admin tools collapsed, live reachability dots |
 | `config/recyclarr/recyclarr.yml` | Quality profile templates, incl. anime |
 | `scripts/provision.sh` | Wire the stack together over the apps' APIs — idempotent |
@@ -485,6 +475,5 @@ stopped container, because Caddy answers 502 and the probe cannot read the statu
 | [`CLAUDE.md`](CLAUDE.md) | Working guidance for Claude Code |
 | [`docs/spec.md`](docs/spec.md) | The build specification — source of truth |
 | [`docs/decisions.md`](docs/decisions.md) | Implementation choices and open questions |
-| [`docs/dev-testing.md`](docs/dev-testing.md) | What is testable on the Mac, what is not |
 | [`docs/verification.md`](docs/verification.md) | Acceptance checklist, run on the server |
 | [`docs/review-2026-08.md`](docs/review-2026-08.md) | Security and architecture review, and what it changed |

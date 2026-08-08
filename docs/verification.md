@@ -1,8 +1,9 @@
 # Verification checklist
 
 The acceptance criteria from spec §9.1, turned into commands. **All of these run
-on the Debian target**, not on the dev workstation — none of them can be
-meaningfully approximated on macOS (see `dev-testing.md`).
+on the box**, and most of them cannot be meaningfully approximated anywhere
+else — that is why they are a separate checklist rather than part of
+`validate.sh`.
 
 Work through them in order. Items 1–2 should pass before the stack is
 configured; 3–4 are the ones people skip and regret.

@@ -1,4 +1,4 @@
-# Production Caddyfile — Debian target.
+# Caddyfile — Debian target.
 #
 # Certificates come from Let's Encrypt over HTTP-01, which needs BOTH :80 and
 # :443 forwarded from the router to CADDY_BIND_ADDR. Three names are issued:
@@ -14,58 +14,11 @@
 #   - Router forwarding 80 and 443 to CADDY_BIND_ADDR, the box's LAN address.
 #   - ACME_EMAIL set — Let's Encrypt uses it for expiry warnings.
 #
-# There is no tailscaled socket mounted any more. It existed only to fetch
-# *.ts.net certificates, and those are gone; admin apps are reached directly at
-# <lan-ip>:<port> over Tailscale rather than proxied (decisions.md D25).
+# This file holds only certificate issuance. Everything else — the routes and
+# the two snippets they import — is in sites.caddy.
 
 {
 	email {$ACME_EMAIL}
-}
-
-# Imported by every site in sites.caddy.
-#
-# The log is the point. Caddy is the only entry point from the internet and none
-# of the apps behind it record who reached them, so without this there is no way
-# to answer "has anyone else touched this box". It is also what the fail2ban
-# caddy-auth jail reads, so the format is load-bearing, not just diagnostic.
-#
-# The headers are baseline hardening, not the load-bearing control — auth is
-# enforced by each app, and scripts/audit-auth.sh is what proves it. There is
-# deliberately no Content-Security-Policy: Jellyfin's web client and Jellyseerr
-# both depend on inline scripts and break under a strict one.
-(common) {
-	log {
-		output file /var/log/caddy/access.log {
-			roll_size 10MiB
-			roll_keep 5
-		}
-		format json
-	}
-	header {
-		# A real domain over HTTPS only, so pinning costs nothing. Not set in
-		# the dev Caddyfile, where it would pin the dev hostname to HTTPS in the
-		# browser for a year and outlive the stack.
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		X-Content-Type-Options "nosniff"
-		Referrer-Policy "no-referrer"
-		-Server
-	}
-}
-
-# Tags requests that came from the LAN or the tailnet, so the landing page can
-# show the Manage section to the administrator and not to the internet.
-#
-# This is presentation, not access control. The six admin apps are unreachable
-# through this proxy because they have no route in sites.caddy and no DNS
-# record — not because a link is hidden. Treat this snippet as cosmetic and the
-# absence of the routes as the boundary.
-#
-# 100.64.0.0/10 is the CGNAT range Tailscale assigns from; the other three are
-# RFC1918. Defined here rather than in sites.caddy because the dev box needs a
-# different set — see Caddyfile.dev.
-(private_only) {
-	@private remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10
-	request_header @private X-Admin-Visible 1
 }
 
 import sites.caddy

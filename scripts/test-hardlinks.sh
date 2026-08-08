@@ -11,10 +11,6 @@
 # it would a completed download, and Sonarr links it into the library, as it
 # would on import. That exercises the identical-path rule (spec §4.1) as well
 # as the same-filesystem rule.
-#
-# Runs unchanged on macOS and Debian. On the Mac the named volume puts /data on
-# real ext4 inside Docker's Linux VM, so a pass here means what it will mean on
-# the target.
 
 set -euo pipefail
 

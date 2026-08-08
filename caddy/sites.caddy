@@ -1,11 +1,9 @@
 # Reverse proxy routes — spec §5.2.
 #
-# Shared by both the production and dev Caddyfiles so the two can never drift.
-# The only difference between environments is PUBLIC_DOMAIN and how certificates
-# are issued; the routing is identical.
-#
-#   production   PUBLIC_DOMAIN=media.thorby.tech   certs from Let's Encrypt
-#   development  PUBLIC_DOMAIN=<ip>.sslip.io       certs from Caddy's internal CA
+# Imported by Caddyfile, which holds nothing but certificate issuance. The two
+# snippets below used to live there because a second, dev-only Caddyfile needed
+# different values; with one environment there is no reason to separate them
+# from the routes that import them.
 #
 # Upstreams are container names on the compose bridge network, so these must
 # stay in step with `container_name` in docker-compose.yml.
@@ -13,7 +11,7 @@
 # ── Only three services are routed here, and that is the whole point ──────────
 #
 # Sonarr, Radarr, Prowlarr, Bazarr, qBittorrent and SABnzbd are deliberately
-# absent. They are reached at <lan-ip>:<port> on the LAN, or over Tailscale from
+# absent. They are reached at <lan-ip>:<port> on the LAN, or over WireGuard from
 # anywhere — never through this proxy and never under a public name. qBittorrent
 # runs an external program on completion and SABnzbd runs post-processing
 # scripts; both are arbitrary command execution by design (spec §5.3), so the
@@ -23,15 +21,53 @@
 # here — a commented route is one keystroke from being live. scripts/validate.sh
 # fails if any of those six names appears in this file at all (decisions.md D25).
 
-# Every site imports `common` — access logging plus baseline security headers.
-# It is defined in Caddyfile and Caddyfile.dev rather than here, because the two
-# environments need different headers: HSTS is right on a real domain and wrong
-# on a dev CA. Routing stays shared; anything that legitimately differs per
-# environment lives in the two Caddyfiles, same as certificate issuance does.
+# Imported by every site below.
+#
+# The log is the point. Caddy is the only entry point from the internet and none
+# of the apps behind it record who reached them, so without this there is no way
+# to answer "has anyone else touched this box". It is also what the fail2ban
+# caddy-auth jail reads, so the format is load-bearing, not just diagnostic.
+#
+# The headers are baseline hardening, not the load-bearing control — auth is
+# enforced by each app, and scripts/audit-auth.sh is what proves it. There is
+# deliberately no Content-Security-Policy: Jellyfin's web client and Jellyseerr
+# both depend on inline scripts and break under a strict one.
+(common) {
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format json
+	}
+	header {
+		# A real domain over HTTPS only, so pinning costs nothing.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}
+
+# Tags requests that came from the LAN or the WireGuard tunnel, so the landing
+# page can show the Manage section to the administrator and not to the internet.
+#
+# This is presentation, not access control. The seven admin apps are unreachable
+# through this proxy because they have no route below and no DNS record — not
+# because a link is hidden. Treat this snippet as cosmetic and the absence of
+# the routes as the boundary.
+#
+# Three RFC1918 ranges. WG_SUBNET defaults to 10.8.0.0/24, already inside
+# 10.0.0.0/8; a WireGuard subnet chosen outside these ranges must be added here
+# or the Manage section will not render for tunnel clients (decisions.md D26).
+(private_only) {
+	@private remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+	request_header @private X-Admin-Visible 1
+}
 
 # The front door. Static files, served by this same Caddy — no extra container.
 #
-# `private_only` tags requests coming from the LAN or the tailnet, and
+# `private_only` tags requests coming from the LAN or the tunnel, and
 # `templates` lets index.html use that tag to decide whether to render the
 # Manage section. Both are required: without `templates` the conditional would
 # render as literal text *and* the admin links would appear. validate.sh

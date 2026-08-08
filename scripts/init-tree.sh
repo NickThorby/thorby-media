@@ -3,9 +3,9 @@
 # Creates the spec §3.1 directory tree inside /data, from within a running
 # container so it works regardless of what backs the volume.
 #
-# On the Debian target setup.sh already does this and running it again is a
-# harmless no-op. On the macOS dev box the named volume starts empty, so this
-# is how the tree gets created.
+# setup.sh already does this on the host, so running it again is a harmless
+# no-op. It exists for the case where /data was replaced or emptied without
+# re-running setup.sh.
 
 set -euo pipefail
 

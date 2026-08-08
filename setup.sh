@@ -6,8 +6,7 @@
 # the normal way to apply a changed .env.
 #
 # This script edits /etc/fstab, creates a system user, installs a firewall and
-# can format a disk. It cannot be rehearsed on the macOS dev box, so the first
-# run on the target should be:
+# can format a disk. The first run should always be:
 #
 #     sudo ./setup.sh --dry-run --disk /dev/sdX
 #
@@ -101,9 +100,9 @@ $FORMAT_DISK && [[ -z "$DISK_DEV" ]] && die "--format-disk requires --disk /dev/
 preflight() {
   step "Preflight"
 
-  # Hard guard. This script is Debian-specific and destructive; running it on
-  # the macOS dev box must be an error, not a partial application.
-  [[ "$(uname -s)" == "Linux" ]] || die "This script is for the Debian target, not $(uname -s). See docs/dev-testing.md."
+  # Hard guard. This script is Debian-specific and destructive; a partial
+  # application on some other OS must be an error rather than a surprise.
+  [[ "$(uname -s)" == "Linux" ]] || die "This script is for the Debian target, not $(uname -s)."
   [[ -f /etc/debian_version ]]   || die "Not a Debian system — /etc/debian_version is absent."
   ok "Debian $(cat /etc/debian_version)"
 
