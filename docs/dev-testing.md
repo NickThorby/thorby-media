@@ -116,10 +116,47 @@ rather than a host bind mount. A named volume lives on real ext4 inside Docker's
 Linux VM, so inodes, link counts and ownership behave exactly as they will on
 the target.
 
-A macOS bind mount would not do this. VirtioFS has documented permission-mapping
-bugs and does not reproduce inode semantics faithfully, so a hardlink test
-across one would prove nothing either way. That is the whole reason for the
-named volume — see D9 in `decisions.md`.
+A macOS bind mount was assumed not to do this — VirtioFS has documented
+permission-mapping bugs, so a hardlink test across one was expected to prove
+nothing either way. That is the reason for the named volume; see D9 in
+`decisions.md`.
+
+Measured, on Docker Desktop with VirtioFS, that assumption no longer holds: a
+cross-directory hardlink over a bind mount to an APFS volume reports one device,
+one inode and a link count of two, and a UID-1000 process writes files that come
+back owned by 1000. Both download trees pass `test-hardlinks.sh` that way. Treat
+that as a property of the current Docker Desktop rather than a guarantee — it is
+worth re-running the test after a Docker upgrade.
+
+### Putting `/data` on an external disk
+
+The named volume is the right default, but it lives inside Docker's VM disk
+image on the **boot drive**, so it is the wrong place to test real downloads —
+a couple of films will fill it. Set `DEV_DATA_ROOT` in `.env` to a directory on
+an external disk and every media service binds there instead:
+
+```bash
+DEV_DATA_ROOT=/Volumes/YourDisk/data
+```
+
+Compose reads a value starting with `/` as a bind mount and anything else as a
+named volume, so leaving it unset restores the default with no other change.
+
+The disk must be **APFS or HFS+**. exFAT and FAT32 have no hardlinks at all, so
+every import would silently fall back to copying — double disk usage, slow
+imports, broken seeding, and no error anywhere. Create the §3.1 tree under that
+directory, then prove the invariant before trusting it:
+
+```bash
+mkdir -p /Volumes/YourDisk/data/{torrents/{movies,tv,anime},\
+usenet/{incomplete,complete/{movies,tv,anime}},media/{movies,tv,anime}}
+docker compose up -d
+./scripts/test-hardlinks.sh
+DOWNLOADER=sabnzbd SRC_DIR=/data/usenet/complete/tv LABEL=usenet ./scripts/test-hardlinks.sh
+```
+
+Note that `docker compose down -v` does **not** clear a bind-mounted `/data` —
+only the named volume. Delete the directory yourself if you want a clean slate.
 
 The test spans two containers on purpose: qBittorrent writes the file as it
 would a completed download, Sonarr links it as it would on import. That

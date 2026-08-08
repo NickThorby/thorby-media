@@ -6,15 +6,26 @@
 #   1. Strip what macOS cannot provide (/dev/dri, the render group, the
 #      tailscaled socket) using Compose's !reset and !override merge tags.
 #
-#   2. Put /data on a named Docker volume instead of a host bind mount. This is
-#      the important one. A named volume lives on real ext4 inside Docker's
-#      Linux VM, so inodes, link counts and PUID/PGID behave exactly as they
-#      will on the target. macOS VirtioFS bind mounts reproduce none of that
-#      faithfully, which would make a hardlink test result meaningless — and
-#      hardlinking is the invariant most likely to be silently wrong.
+#   2. Put /data on a named Docker volume by default, not a host bind mount. A
+#      named volume lives on real ext4 inside Docker's Linux VM, so inodes, link
+#      counts and PUID/PGID behave exactly as they will on the target. It is the
+#      right default for testing the invariants.
 #
-# Every media service mounts the SAME `mediadata` volume, so torrents/ and
-# media/ share one filesystem exactly as spec §3.3 requires.
+#      Its one drawback is capacity: the volume lives inside Docker's VM disk
+#      image on the Mac's internal drive, so real downloads fill the boot disk.
+#      Set DEV_DATA_ROOT in .env to a host path to put /data on an external disk
+#      instead — the source below switches between the two, because Compose
+#      reads a value starting with "/" as a bind mount and anything else as a
+#      named volume.
+#
+#      That path must be one filesystem and must support hardlinks, so APFS or
+#      HFS+, never exFAT or FAT32. Verify with scripts/test-hardlinks.sh rather
+#      than assuming: hardlinks and UID mapping do survive Docker Desktop's
+#      VirtioFS, but that is a property of the current Docker Desktop, not a
+#      guarantee, and it is the invariant most likely to be silently wrong.
+#
+# Either way every media service mounts the SAME source, so torrents/, usenet/
+# and media/ share one filesystem exactly as spec §3.3 requires.
 
 services:
 
@@ -24,7 +35,7 @@ services:
     group_add: !reset []
     volumes: !override
       - jellyfin_config:/config
-      - mediadata:/data
+      - ${DEV_DATA_ROOT:-mediadata}:/data
 
   prowlarr:
     volumes: !override
@@ -33,27 +44,27 @@ services:
   sonarr:
     volumes: !override
       - sonarr_config:/config
-      - mediadata:/data
+      - ${DEV_DATA_ROOT:-mediadata}:/data
 
   radarr:
     volumes: !override
       - radarr_config:/config
-      - mediadata:/data
+      - ${DEV_DATA_ROOT:-mediadata}:/data
 
   bazarr:
     volumes: !override
       - bazarr_config:/config
-      - mediadata:/data
+      - ${DEV_DATA_ROOT:-mediadata}:/data
 
   qbittorrent:
     volumes: !override
       - qbittorrent_config:/config
-      - mediadata:/data
+      - ${DEV_DATA_ROOT:-mediadata}:/data
 
   sabnzbd:
     volumes: !override
       - sabnzbd_config:/config
-      - mediadata:/data
+      - ${DEV_DATA_ROOT:-mediadata}:/data
 
   jellyseerr:
     volumes: !override
