@@ -227,18 +227,28 @@ else
     ok "SABnzbd: GET / requires a login"
   fi
 
-  ini=$(docker compose exec -T sabnzbd sh -c 'cat /config/sabnzbd.ini' 2>/dev/null || true)
-  if [[ -z "$ini" ]]; then
-    skip "SABnzbd: could not read sabnzbd.ini"
+  # Only the [misc] section is pulled out of the container, never the whole
+  # file. sabnzbd.ini also holds the news provider account under [servers], and
+  # an authentication audit has no business ever holding those credentials.
+  # Narrowing the read is a stronger guarantee than remembering to mask output.
+  misc=$(docker compose exec -T sabnzbd \
+    sh -c 'sed -n "/^\[misc\]/,/^\[[a-z]/p" /config/sabnzbd.ini' 2>/dev/null || true)
+
+  if [[ -z "$misc" ]]; then
+    skip "SABnzbd: could not read the [misc] section of sabnzbd.ini"
   else
     # inet_exposure 0 keeps the API off any external interface regardless of
     # what the container is published on.
-    if [[ "$(grep -m1 '^inet_exposure' <<<"$ini" | tr -d ' ' | cut -d= -f2)" == "0" ]]; then
+    if [[ "$(grep -m1 '^inet_exposure' <<<"$misc" | tr -d ' ' | cut -d= -f2)" == "0" ]]; then
       ok "SABnzbd: inet_exposure is 0"
     else
       bad "SABnzbd: inet_exposure is not 0"
     fi
-    if grep -qE '^password = .+' <<<"$ini"; then
+    # Anchored to [misc] by construction. Run against the whole file this also
+    # matches the provider password under [servers], and then reports a web UI
+    # password as set when there is none — a false pass on the check that
+    # matters most, since SABnzbd runs post-processing scripts.
+    if grep -qE '^password = .+' <<<"$misc"; then
       ok "SABnzbd: a password is set"
     else
       bad "SABnzbd: no password is set"
@@ -256,11 +266,15 @@ if ! up bazarr; then
 else
   # Bazarr serves its SPA shell at 200 whether or not you are logged in, so the
   # status code proves nothing. The config is the only reliable signal.
-  cfg=$(docker compose exec -T bazarr sh -c 'cat /config/config/config.yaml' 2>/dev/null || true)
-  if [[ -z "$cfg" ]]; then
-    skip "Bazarr: could not read config.yaml"
+  #
+  # Sliced inside the container for the same reason as SABnzbd above: the rest
+  # of config.yaml holds the subtitle providers' account credentials.
+  auth_block=$(docker compose exec -T bazarr \
+    sh -c 'sed -n "/^auth:/,/^[a-z]/p" /config/config/config.yaml' 2>/dev/null || true)
+
+  if [[ -z "$auth_block" ]]; then
+    skip "Bazarr: could not read the auth block of config.yaml"
   else
-    auth_block=$(sed -n '/^auth:/,/^[a-z]/p' <<<"$cfg")
     if grep -qE '^\s+type:\s*form' <<<"$auth_block"; then
       ok "Bazarr: form authentication enabled"
     else
