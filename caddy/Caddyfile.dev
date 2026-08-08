@@ -1,11 +1,13 @@
 # Development Caddyfile — macOS dev box only.
 #
-# Identical routing to production (same sites.caddy); the only difference is
-# certificate issuance. There is no tailnet here, so `local_certs` forces every
-# site onto Caddy's internal CA instead of trying to reach tailscaled or ACME.
+# Identical routing to production (same sites.caddy); the only differences are
+# certificate issuance and which clients count as private. There is no public
+# domain here, so `local_certs` forces every site onto Caddy's internal CA
+# instead of reaching for ACME.
 #
-# With CADDY_DOMAIN=localhost the services are served at, e.g.,
-# https://sonarr.localhost:8443 — macOS resolves *.localhost to 127.0.0.1.
+# With PUBLIC_DOMAIN=<lan-ip>.sslip.io the services are served at, e.g.,
+# https://jellyfin.192.168.0.198.sslip.io:8443 — sslip.io resolves any subdomain
+# back to the IP embedded in the name, so no hosts file is needed.
 #
 # The certificate will not be trusted by your browser until you add Caddy's
 # root CA to the system keychain. Extract it with:
@@ -19,8 +21,8 @@
 }
 
 # Same snippet as production minus HSTS — see the note in Caddyfile. Sending it
-# here would pin every *.localhost host to HTTPS in the browser for a year,
-# which outlives this stack and breaks unrelated local work.
+# here would pin the dev hostname to HTTPS in the browser for a year, which
+# outlives this stack and breaks unrelated local work.
 (common) {
 	log {
 		output file /var/log/caddy/access.log {
@@ -34,6 +36,23 @@
 		Referrer-Policy "no-referrer"
 		-Server
 	}
+}
+
+# Production's ranges plus 172.67.0.0/16, which is not a private range and has
+# no business being here on a real box.
+#
+# Docker Desktop's port forwarder rewrites the source address of every published
+# connection to a synthetic 172.67.x address — loopback, LAN and container-to-
+# host alike. Note 172.67 is outside RFC1918: the /12 stops at 172.31. Without
+# this line no dev client would ever match @private, the Manage section would
+# vanish locally, and the difference from production would look like a bug in
+# the template rather than a quirk of the host.
+#
+# The same rewrite is what made SABnzbd refuse every caller — see D25 and the
+# local_ranges repair in provision.sh.
+(private_only) {
+	@private remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 172.67.0.0/16
+	request_header @private X-Admin-Visible 1
 }
 
 import sites.caddy

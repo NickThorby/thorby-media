@@ -1,15 +1,17 @@
 # thorby-media
 
 Docker configuration for a single-box home media server: Jellyfin plus the *arr
-stack and qBittorrent, reached over Tailscale, played on Apple TV via Infuse.
+stack and qBittorrent. The household reaches it on a public domain; the admin
+apps are Tailscale-only. Played on Apple TV via Infuse.
 
 Full requirements are in [`docs/spec.md`](docs/spec.md). This README is the
 operator's guide: how to bring it up, configure it in the right order, and grow
 it later.
 
 > **Status.** All deliverables are implemented and validated on a macOS dev box.
-> Hardware transcoding, `*.ts.net` certificates, tailnet binding, UFW, smartd
-> delivery, and unattended boot are **untested** — they need the Debian machine.
+> Hardware transcoding, Let's Encrypt issuance, the router port forward, UFW and
+> `DOCKER-USER`, the fail2ban web jails, smartd delivery, and unattended boot are
+> **untested** — they need the Debian machine.
 > See [`docs/verification.md`](docs/verification.md).
 
 ---
@@ -22,8 +24,10 @@ so that downloads and the library sit on one filesystem and Sonarr/Radarr import
 by hardlink instead of copying. Both download protocols land under that root
 (`torrents/` and `usenet/`, siblings of `media/`), so imports hardlink whichever
 one a release came from. Container config lives separately on the SSD
-under `/opt/mediaserver`. Caddy binds only to the Tailscale interface and is the
-sole remote entry point; nothing is forwarded from the router. The `/data` bind
+under `/opt/mediaserver`. Caddy is the sole entry point from the internet and
+serves exactly three names — the landing page, Jellyfin and Jellyseerr; the six
+admin apps have no route through it and are reached at `<lan-ip>:<port>` over
+Tailscale (spec §5.1, decisions.md D25). The `/data` bind
 mount is deliberate indirection: adding disks later means swapping it for a
 mergerfs pool with no container changes and no library rescan.
 
@@ -37,10 +41,12 @@ The target machine, per spec §1–§2:
 - BIOS: integrated graphics enabled and set as primary adapter, onboard WiFi
   disabled, **Restore on AC Power Loss: Power On**, Fast Boot disabled
 - Docker from Docker's official repository — not Debian's `docker.io`
-- Tailscale installed and joined to the tailnet (`tailscale up`); note the
-  tailnet IP, Caddy binds to it
-- HTTPS Certificates and MagicDNS enabled for the tailnet in the Tailscale admin
-  console, or Caddy cannot issue certs for `*.ts.net`
+- Tailscale installed and joined to the tailnet (`tailscale up`) — this is how
+  you reach the admin apps from outside the house
+- A domain, with A records for it plus `jellyfin.` and `seerr.` pointing at the
+  WAN address
+- Router forwarding TCP **80 and 443** to the box's LAN address. Both: Let's
+  Encrypt validates over 80 and will not issue a certificate without it
 
 Confirm the iGPU is alive before going further — `vainfo` must list H.264 and
 HEVC entrypoints. If `/dev/dri` does not exist, it is disabled in BIOS.
@@ -88,8 +94,10 @@ smartd, sets UFW rules, and prints the values you need for the next step.
 |---|---|
 | `RENDER_GID` | `getent group render` |
 | `BIND_ADDR` | `127.0.0.1` for now — widened in step 7, once the wizards are done |
-| `CADDY_BIND_ADDR` | `tailscale ip -4` |
-| `CADDY_DOMAIN` | the machine's fully qualified `<host>.ts.net` |
+| `CADDY_BIND_ADDR` | the LAN address the router forwards 80/443 to |
+| `PUBLIC_DOMAIN` | your domain, e.g. `media.example.com` |
+| `ACME_EMAIL` | contact address for Let's Encrypt expiry warnings |
+| `ADMIN_HOST` | same LAN address — where the Manage links point |
 | `LAN_SUBNET` | your home network, e.g. `192.168.1.0/24` |
 | `SMTP_*`, `ALERT_EMAIL` | your mail relay — without these SMART alerts go nowhere |
 | `USENET_USER`, `USENET_PASS` | your news server (Eweka etc). Blank = no Usenet downloads |
@@ -298,14 +306,28 @@ Request, and it appears.
 
 ### 9a. The front door
 
-**`https://<host>.ts.net` is the one URL to give the household.** It serves the
-landing page — Watch, Request, and the six admin tools folded away behind
-*Manage* — and everything else is a subdomain of it. Nobody needs to remember a
-port, and nobody needs to be told which of eight applications does what.
+**`https://<your-domain>` is the one URL to give the household.** It serves the
+landing page — Watch and Request — and those two are the only things anyone else
+needs. No VPN, no app, no port to remember.
+
+The *Manage* section, with the six admin tools, renders **only for clients on the
+LAN or the tailnet**. That is a courtesy, not a control: those apps are
+unreachable from the internet because they have no route in `caddy/sites.caddy`
+and no DNS record, not because a link is hidden.
 
 The page is three static files in `caddy/site/`, served by the Caddy that is
 already proxying the stack. Because it is a bind mount read per request, editing
 it is live on save — there is no build step and no `docker compose restart`.
+
+### 9b. Admin access from outside
+
+Join the box and your phone to the same tailnet, then browse to
+`http://<lan-ip>:8989` for Sonarr and so on. Nothing proxies them, so there is
+no hostname to remember and no certificate involved — over the tailnet the
+transport is encrypted by WireGuard.
+
+This is why the admin apps do not need a public name, and why adding one would
+be a mistake: qBittorrent and SABnzbd both run arbitrary commands by design.
 
 ### 10. Infuse
 
@@ -381,8 +403,10 @@ alerting path that has never been tested is not an alerting path.
 
 **Security posture**, restated because it is easy to erode:
 
-- Nothing is forwarded from the router; the public IP listens on nothing
-- Remote access is Tailscale, only
+- Only 80 and 443 are forwarded, and Caddy answers on them for three names
+- The six admin apps have no route, no public DNS record, and no path through
+  `DOCKER-USER` — three independent reasons the internet cannot reach them
+- Admin access is Tailscale plus `<lan-ip>:<port>`
 - The *arr UIs, qBittorrent and SABnzbd are not built for hostile exposure and
   must never reach the internet. qBittorrent's external-program setting and
   SABnzbd's post-processing scripts are both arbitrary command execution
@@ -448,7 +472,7 @@ stopped container, because Caddy answers 502 and the probe cannot read the statu
 | `.env.example` | Every host-specific value, with a commented Mac block |
 | `setup.sh` | Debian host provisioning — idempotent, `--dry-run`, opt-in disk format |
 | `caddy/sites.caddy` | The reverse-proxy routes, shared by both environments |
-| `caddy/Caddyfile` | Production: `*.ts.net` certs from tailscaled |
+| `caddy/Caddyfile` | Production: Let's Encrypt over HTTP-01 |
 | `caddy/Caddyfile.dev` | Dev: internal CA |
 | `caddy/site/` | The landing page — Watch / Request, admin tools collapsed, live reachability dots |
 | `config/recyclarr/recyclarr.yml` | Quality profile templates, incl. anime |

@@ -53,23 +53,28 @@ already use, or a script that works on the target will fail here.
 
 Services are on loopback only: Jellyfin `:8096`, Prowlarr `:9696`, Sonarr
 `:8989`, Radarr `:7878`, Bazarr `:6767`, qBittorrent `:8081`, SABnzbd `:8085`,
-Jellyseerr `:5055`, and Caddy on `:8443` serving `https://<service>.localhost:8443`.
+Jellyseerr `:5055`, and Caddy on `:8443`.
 
-The landing page is at **`https://localhost:8443`** — the bare domain. Its links
-are built from `location.host` at runtime, so they resolve to
-`https://sonarr.localhost:8443` here and `https://sonarr.<host>.ts.net` on the
-target, with no templating and no per-environment copy of the file.
+Set `PUBLIC_DOMAIN` to an sslip.io name — it answers any subdomain with the IP
+embedded in it, so `192.168.0.198.sslip.io` gives working `jellyfin.` and
+`seerr.` hostnames with no hosts file and no real domain. The landing page is at
+**`https://<PUBLIC_DOMAIN>:8443`**; the two tile links are built from
+`location.host` at runtime, so one file works here and on the target.
+
+Only three names are routed — landing, `jellyfin.` and `seerr.`. The six admin
+apps are reached at `<ADMIN_HOST>:<port>` and are not proxied, here or on the
+target. A request to `sonarr.<PUBLIC_DOMAIN>` should fail to match any site,
+and that is the behaviour to preserve.
 
 `./caddy/site` is a bind mount and `file_server` reads from disk per request, so
 editing the page takes effect on the next reload — no `docker compose restart`.
 
 **The status dots will not appear here by default, and that is correct.** Each
-one is a `no-cors` probe of a service subdomain, and every subdomain is a
-separate origin with its own certificate from Caddy's internal CA. You accepted
-the warning for `localhost:8443`; you never accepted one for
-`sonarr.localhost:8443`, so all eight probes fail on TLS and the page hides the
-dots rather than showing a wall of grey. To see the real thing, trust the CA —
-note this changes your login keychain:
+one is a `no-cors` probe, and each target is a separate origin with its own
+certificate from Caddy's internal CA. You accepted the warning for the bare
+domain; you never accepted one for `jellyfin.<PUBLIC_DOMAIN>`, so the probes
+fail on TLS and the page hides the dots rather than showing a wall of grey. To
+see the real thing, trust the CA — note this changes your login keychain:
 
 ```bash
 docker compose cp caddy:/caddydata/caddy/pki/authorities/local/root.crt /tmp/caddy-root.crt
@@ -77,8 +82,14 @@ security add-trusted-cert -d -r trustRoot -k ~/Library/Keychains/login.keychain-
 ```
 
 Stopping a container will *not* turn its dot grey — Caddy answers 502 and an
-opaque response cannot see the status (decisions.md D24). To exercise a real
-failure, comment a site out of `sites.caddy` and restart Caddy.
+opaque response cannot see the status (decisions.md D24).
+
+**The Manage section is visible here, and that depends on one dev-only line.**
+Caddy shows it to clients in RFC1918 or the Tailscale range, but Docker Desktop
+rewrites every client address to a synthetic `172.67.x` — which is *not* private,
+since the /12 stops at 172.31. `Caddyfile.dev`'s `(private_only)` snippet adds
+`172.67.0.0/16` for exactly that reason. Production must never carry that line.
+It is the same rewrite that made SABnzbd refuse every caller (D25).
 
 To check the Usenet hardlink tree as well as the torrent one:
 
@@ -168,12 +179,14 @@ Caddy runs here with `local_certs`, issuing from its own internal CA, so the
 full proxy path is exercised:
 
 ```bash
-curl -kI https://sonarr.localhost:8443/
+curl -kI "https://jellyfin.${PUBLIC_DOMAIN}:8443/"     # proxied, expect 200/302
+curl -kI "https://sonarr.${PUBLIC_DOMAIN}:8443/"       # must NOT proxy
 ```
 
-macOS resolves `*.localhost` to 127.0.0.1. The certificate will not be trusted
-until you add Caddy's root CA to the keychain; `-k` or clicking through the
-warning is fine, since this proves routing, not trust.
+sslip.io resolves both, so the second one proves the route is genuinely absent
+rather than merely unresolvable. The certificate will not be trusted until you
+add Caddy's root CA to the keychain; `-k` is fine, since this proves routing,
+not trust.
 
 ### setup.sh
 
@@ -221,8 +234,9 @@ docker run --rm -v "$PWD:/repo:ro" debian:trixie bash -c '
 | Requirement | Why not | Verified by |
 |---|---|---|
 | VAAPI / Quick Sync transcoding | No `/dev/dri`, no Intel iGPU | `vainfo`, `intel_gpu_top` on target |
-| `*.ts.net` certificates | Requires a real tailnet and tailscaled | on target |
-| Caddy bound to the tailnet interface | No Tailscale here | on target |
+| Let's Encrypt issuance | Needs a real domain and inbound 80 | on target |
+| The router port forward | No router in the loop | external port scan |
+| Admin apps over Tailscale | No tailnet here | on target, from mobile data |
 | UFW rules | Linux-only | on target |
 | `DOCKER-USER` rules taking effect | Rules are written here, never loaded | `iptables -L DOCKER-USER`, external port scan |
 | fail2ban, unattended-upgrades | No systemd in the container | on target |

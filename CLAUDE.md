@@ -25,7 +25,7 @@ different machine. These are never the same host.
 | Docker | Docker Desktop | docker-ce from Docker's official repo |
 | CPU | Apple Silicon / Intel Mac | Intel i7-8700K, Quick Sync iGPU |
 | Media disk | none | 8 TB ext4 at `/mnt/disk1`, bind-mounted to `/data` |
-| Access | local | Tailscale only |
+| Access | local | public 80/443 for three names; Tailscale for admin |
 
 **Do not, on the dev box:**
 
@@ -59,16 +59,25 @@ requiring explicit justification.
 3. **`PUID=1000` / `PGID=1000`** everywhere, matching the `media` user that owns
    `/mnt/disk1/data`. Jellyfin additionally needs the host's `render` GID via
    `group_add` for `/dev/dri` access.
-4. **Nothing is exposed to the public internet.** No router port forwarding, no
-   public DNS record. Caddy — the remote-access path — binds only to the
-   tailnet IP (`CADDY_BIND_ADDR`). Service ports do publish on the LAN via
-   `BIND_ADDR`, which is intended: spec §5.1 wants direct LAN access and Infuse
-   reaches Jellyfin that way. The boundary is the router, plus the `DOCKER-USER`
-   rules `setup.sh` installs — **not** plain UFW, which does not filter
-   Docker-published ports at all (decisions.md D1, D19). qBittorrent's "run
-   external program on completion" and SABnzbd's post-processing scripts are
-   both arbitrary command execution by design. Neither tolerates hostile
-   exposure.
+4. **Exactly three things are public: the landing page, Jellyfin and
+   Jellyseerr.** They are served by Caddy at `{$PUBLIC_DOMAIN}` with ports 80
+   and 443 forwarded from the router. The other six apps are excluded
+   *structurally*, not carefully: they have **no route** in `caddy/sites.caddy`,
+   **no public DNS record**, and the `DOCKER-USER` chain returns only 80/443
+   from off-box. Any one of those alone would do; the point is that adding a
+   route is not enough to expose one by accident, and `validate.sh` fails if any
+   of the six names appears in the routes file at all.
+
+   qBittorrent's "run external program on completion" and SABnzbd's
+   post-processing scripts are both arbitrary command execution by design — a
+   session on either is a shell on the box. That is why the exclusion is
+   mechanical (decisions.md D25, spec §5.3).
+
+   Admin access is Tailscale plus `<lan-ip>:<port>`, with nothing proxying it.
+   Service ports publish on the LAN via `BIND_ADDR`, which is intended and is
+   what both the tailnet path and Infuse rely on. Note that plain UFW does not
+   filter Docker-published ports at all — the `DOCKER-USER` rules are what make
+   that true (decisions.md D1, D19).
 
 5. **Every app enforces authentication, and it is asserted, not assumed.** The
    *arr auth method and scope are pinned as environment variables so they are
@@ -97,7 +106,7 @@ docker-compose.dev.yml    macOS-only override, layered via COMPOSE_FILE
 setup.sh                  host provisioning for Debian (deliverable §9.4)
 caddy/
   sites.caddy             the routes — shared by both environments
-  Caddyfile               production: ts.net certs from tailscaled
+  Caddyfile               production: Let's Encrypt over HTTP-01
   Caddyfile.dev           dev: internal CA via local_certs
   site/                   the landing page, served by Caddy at the bare domain
                           — no framework, no build step, no external requests
@@ -155,7 +164,7 @@ tailnet hostname, and the tailnet IP all stay out of git — `.gitignore` covers
 them. The *arr API keys are pinned in `.env` rather than read out of each UI
 (decisions.md D12); treat them as passwords, since a valid key is full control
 of that app. Placeholders in tracked files use the spec's own notation:
-`<host>.ts.net`, `<render-gid>`, `<disk1-uuid>`.
+`media.example.com`, `<lan-ip>`, `<render-gid>`, `<disk1-uuid>`.
 
 If you need a real value to make progress, ask for it — don't invent one that
 looks plausible and gets copy-pasted into production.
@@ -223,8 +232,8 @@ because they invalidate reasonable-sounding assumptions:
   with the running app. Ask the API (D18).
 
 Untested until the Debian box exists — do not report these as working: hardware
-transcoding, `*.ts.net` certificates, tailnet-only binding, the UFW and
-`DOCKER-USER` rules, fail2ban, unattended-upgrades, smartd delivery, and
-unattended boot. They are tracked in
+transcoding, Let's Encrypt issuance, the router port forward, the UFW and
+`DOCKER-USER` rules (including the new 80/443 returns), the fail2ban web jails,
+unattended-upgrades, smartd delivery, and unattended boot. They are tracked in
 [`docs/verification.md`](docs/verification.md); open questions are in
 [`docs/decisions.md`](docs/decisions.md).

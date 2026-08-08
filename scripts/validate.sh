@@ -98,15 +98,30 @@ else
   printf '      %s\n' "$unbound"
 fi
 
-# Caddy is the remote-access path and the only service that should ever be
-# reachable from off-LAN. Publishing it on 0.0.0.0 puts the admin UIs one
-# router rule away from the internet.
+# Caddy is the internet-facing service. It must publish on the single LAN
+# address the router forwards to, so that a bad router rule is the only way in
+# rather than one of two. A wildcard here also removes the distinction between
+# "forwarded" and "every interface this box ever joins".
 caddy_ips=$(jq -r '[.services.caddy.ports // [] | .[] | .host_ip // ""] | unique | join(", ")' <<<"$rendered")
 if [[ "$caddy_ips" == *"0.0.0.0"* || "$caddy_ips" == *"::"* ]]; then
-  bad "caddy publishes on $caddy_ips — it must bind to the tailnet IP only"
-  printf '      %s\n' "On the target: CADDY_BIND_ADDR=\$(tailscale ip -4)"
+  bad "caddy publishes on $caddy_ips — it must bind one LAN address, not a wildcard"
+  printf '      %s\n' "CADDY_BIND_ADDR should be the address the router forwards 80/443 to."
 else
   ok "caddy binds to $caddy_ips, not a wildcard"
+fi
+
+# The socket is the tailnet control API, not a cert endpoint, and Caddy runs as
+# root. It existed only to fetch *.ts.net certificates; those are gone, and
+# Caddy now faces the internet. Re-adding it would reinstate S7 against a much
+# worse threat model (decisions.md D21, D25).
+sock=$(jq -r '[.services | to_entries[] as $s | ($s.value.volumes // [])[]
+               | select((.source // "") | test("tailscaled.sock"))
+               | $s.key] | unique | join(", ")' <<<"$rendered")
+if [[ -z "$sock" ]]; then
+  ok "no service mounts tailscaled.sock"
+else
+  bad "tailscaled.sock is mounted into: $sock"
+  printf '      %s\n' "An internet-facing container must not hold the tailnet control API."
 fi
 
 # The *arr auth settings are the difference between a login prompt and an
@@ -136,7 +151,8 @@ echo
 echo "Caddy"
 
 for cf in Caddyfile Caddyfile.dev; do
-  if out=$(docker run --rm -e CADDY_DOMAIN=validate.example.ts.net \
+  if out=$(docker run --rm -e PUBLIC_DOMAIN=validate.example.com \
+             -e ACME_EMAIL=validate@example.com \
              -v "$PWD/caddy:/etc/caddy:ro" caddy:alpine \
              caddy validate --config "/etc/caddy/$cf" 2>&1); then
     ok "caddy/$cf valid"
@@ -150,14 +166,18 @@ echo
 echo "Landing page"
 
 # Invariant 7. A CDN link or a webfont here renders perfectly on this Mac, which
-# has internet, and a broken page for a tailnet client, which is not guaranteed
-# any. That is a silent failure on the target in front of the household, so it
-# gets an assertion rather than a comment (decisions.md D17, D24).
-if out=$(grep -rEn '(src|href)="(https?:)?//' caddy/site); then
-  bad "landing page references an external URL"
+# has internet, and a broken page for a client that has none. That is a silent
+# failure in front of the household, so it gets an assertion (D17, D24).
+#
+# Scoped to things the browser FETCHES — every src=, and href= on a <link>. An
+# <a href> is a place the user can go, not a request the page makes, and the
+# admin chips legitimately point at http://<lan-ip>:<port>. That those stay
+# templated rather than hardcoded is a separate check below.
+if out=$(grep -rEn 'src="(https?:)?//|<link[^>]+href="(https?:)?//' caddy/site); then
+  bad "landing page fetches an external subresource"
   indent <<<"$out"
 else
-  ok "landing page makes no external requests"
+  ok "landing page fetches nothing external"
 fi
 
 # Same rule, CSS side. Allowed: data: URIs (the favicon, the grain filter) and
@@ -170,17 +190,57 @@ else
   ok "landing page CSS uses only data: URIs"
 fi
 
-# Spec §5.2: the tiles and the proxy routes are the same eight names kept in two
-# files. Nothing notices when they drift — a stale link fails at TLS, not 404.
-subs=$(grep -oE 'data-sub="[a-z]+"' caddy/site/index.html | sed -E 's/.*"(.*)"/\1/' | sort -u)
-# shellcheck disable=SC2016  # {$CADDY_DOMAIN} is Caddy's literal placeholder, not a shell expansion
-routes=$(grep -oE '^[a-z]+\.\{\$CADDY_DOMAIN\}' caddy/sites.caddy | sed -E 's/\..*//' | sort -u)
-if [[ "$subs" == "$routes" ]]; then
-  ok "landing page links match the sites.caddy routes"
+# The two hero tiles are the only links that are proxied, and they and the
+# routes are the same names kept in two files. Nothing notices when they drift —
+# a stale link fails at TLS, not with a 404.
+# Same `|| true` reasoning as below: with pipefail, a grep that matches nothing
+# fails the pipeline and aborts the run rather than reporting an empty set.
+tiles=$(sed -n '/<nav class="tiles"/,/<\/nav>/p' caddy/site/index.html \
+        | { grep -oE 'data-sub="[a-z]+"' || true; } | sed -E 's/.*"(.*)"/\1/' | sort -u)
+# shellcheck disable=SC2016  # {$PUBLIC_DOMAIN} is Caddy's literal placeholder, not a shell expansion
+routes=$({ grep -oE '^[a-z]+\.\{\$PUBLIC_DOMAIN\}' caddy/sites.caddy || true; } | sed -E 's/\..*//' | sort -u)
+if [[ "$tiles" == "$routes" ]]; then
+  ok "landing page tiles match the proxied routes"
 else
-  bad "landing page links and sites.caddy routes disagree"
-  printf '      only on the page:  %s\n' "$(comm -23 <(echo "$subs") <(echo "$routes") | tr '\n' ' ')"
-  printf '      only in caddy:     %s\n' "$(comm -13 <(echo "$subs") <(echo "$routes") | tr '\n' ' ')"
+  bad "landing page tiles and sites.caddy routes disagree"
+  printf '      only on the page:  %s\n' "$(comm -23 <(echo "$tiles") <(echo "$routes") | tr '\n' ' ')"
+  printf '      only in caddy:     %s\n' "$(comm -13 <(echo "$tiles") <(echo "$routes") | tr '\n' ' ')"
+fi
+
+# The whole point of D25. qBittorrent runs an external program on completion and
+# SABnzbd runs post-processing scripts, so a public route to either is a shell
+# on the box. They are excluded structurally — by not being routed — and this is
+# what keeps it that way when someone adds a block "just to test something".
+if out=$(grep -nEi 'sonarr|radarr|prowlarr|bazarr|qbittorrent|sabnzbd|\bqbit\b|\bsab\b' caddy/sites.caddy \
+         | grep -vE '^[0-9]+:\s*#'); then
+  bad "an admin service appears in caddy/sites.caddy — it must not be routed"
+  indent <<<"$out"
+else
+  ok "no admin service is routed through Caddy"
+fi
+
+# Without `templates` the {{if}} in index.html renders as literal text AND the
+# admin block renders with it — the failure is visible but it is still a leak of
+# the internal hostnames to the public page.
+# `|| true` on both: grep -c prints 0 but exits 1 when nothing matches, and
+# under `set -e` that aborts the whole run — so the check meant to catch a
+# missing `templates` would silently kill validate.sh instead of failing it.
+site_blocks=$(grep -c 'root \* /srv/site' caddy/sites.caddy || true)
+tmpl_blocks=$(grep -c '^[[:space:]]*templates[[:space:]]*$' caddy/sites.caddy || true)
+if [[ "$site_blocks" -gt 0 && "$site_blocks" -eq "$tmpl_blocks" ]]; then
+  ok "every block serving /srv/site enables templates"
+else
+  bad "$site_blocks block(s) serve /srv/site but $tmpl_blocks enable templates"
+  printf '      %s\n' "Without templates the {{if}} leaks as text and Manage renders publicly."
+fi
+
+# .env is the single source of truth for a host port. A literal address or port
+# in the page is a second one, and the two drift silently.
+if out=$(grep -nE 'href="https?://[^"{]' caddy/site/index.html); then
+  bad "landing page hardcodes a host — admin links must come from {{env}}"
+  indent <<<"$out"
+else
+  ok "landing page takes its admin host and ports from the environment"
 fi
 
 # nosniff is set on this site, so a file Caddy types wrongly is a blank page

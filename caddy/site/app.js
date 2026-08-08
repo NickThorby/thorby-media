@@ -10,11 +10,16 @@
 (() => {
   'use strict';
 
-  // Links are built from the current host rather than hardcoded, so this one
-  // file works unchanged at mediabox.ts.net and at localhost:8443 — the port
-  // comes along for free, which a server-side template using CADDY_DOMAIN
-  // would lose.
-  for (const el of document.querySelectorAll('[data-sub]')) {
+  // The two public tiles are built from the current host rather than hardcoded,
+  // so this one file works unchanged at media.thorby.tech and at a dev sslip.io
+  // name — the port comes along for free, which a server-side template using
+  // PUBLIC_DOMAIN would lose.
+  //
+  // Scoped to .tiles on purpose. The admin chips are not subdomains of anything
+  // and are not proxied: their hrefs are <lan-ip>:<port>, rendered server-side
+  // from the environment, and this loop would overwrite them with URLs that
+  // resolve nowhere.
+  for (const el of document.querySelectorAll('.tiles [data-sub]')) {
     el.href = `${location.protocol}//${el.dataset.sub}.${location.host}`;
   }
 
@@ -69,9 +74,17 @@
 
   // The six admin tools are only probed once someone opens the drawer, which
   // saves six cross-origin requests on the household visits that never do.
-  document.querySelector('.manage').addEventListener(
-    'toggle', () => probeGroup(document.querySelector('.admin')), { once: true },
-  );
+  //
+  // Guarded because the drawer is absent entirely for clients off the LAN and
+  // off the tailnet — Caddy templates it out. Without the guard this throws and
+  // takes the spotlight code below with it, on the one page that must never
+  // look broken.
+  const manage = document.querySelector('.manage');
+  if (manage) {
+    manage.addEventListener(
+      'toggle', () => probeGroup(document.querySelector('.admin')), { once: true },
+    );
+  }
 
   /* ── Pointer spotlight ──────────────────────────────────────────────────── */
 

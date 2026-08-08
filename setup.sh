@@ -265,10 +265,84 @@ EOF
   fi
 
   # fail2ban's Debian default already watches sshd; enabling the service is all
-  # that is needed. It matters most on the LAN-facing side, since the tailnet
-  # side is authenticated by Tailscale before a packet reaches sshd.
+  # that is needed there. It matters most on the LAN-facing side, since the
+  # tailnet side is authenticated by Tailscale before a packet reaches sshd.
+  configure_fail2ban_web
   run systemctl enable --now fail2ban
-  ok "fail2ban enabled (default sshd jail)"
+  ok "fail2ban enabled (sshd jail, plus web jails if PUBLIC_DOMAIN is set)"
+}
+
+# Brute-force protection for the two apps that face the internet.
+#
+# Nothing else in the stack rate-limits anything: Caddy has no rate_limit
+# directive without a plugin, and neither Jellyfin nor Jellyseerr locks an
+# account out by default. Fine when the box was tailnet-only; thin for a login
+# page anyone can reach (decisions.md D25).
+configure_fail2ban_web() {
+  [[ -n "${PUBLIC_DOMAIN:-}" ]] || return 0
+  [[ -d /etc/fail2ban ]] || { warn "/etc/fail2ban not found — skipping web jails"; return 0; }
+
+  local caddy_log="${CONFIG_ROOT:-/opt/mediaserver}/caddy/logs/access.log"
+
+  if $DRY_RUN; then
+    printf '  \033[36m[dry-run]\033[0m write fail2ban caddy-auth and jellyfin jails\n'
+    return 0
+  fi
+
+  # Caddy's access log is already JSON and already rolled. It is also the only
+  # place that records the REAL client address — Jellyfin and Jellyseerr both
+  # see Caddy's container IP unless told otherwise, so this jail is the one that
+  # can actually ban an attacker rather than the proxy.
+  write_file /etc/fail2ban/filter.d/caddy-auth.conf 0644 <<'EOF'
+# Managed by setup.sh. Matches Caddy's JSON access log.
+[Definition]
+failregex = ^.*"remote_ip":"<HOST>".*"status":(401|403).*$
+ignoreregex =
+EOF
+
+  write_file /etc/fail2ban/jail.d/caddy-auth.conf 0644 <<EOF
+# Managed by setup.sh — brute-force protection for the public routes.
+[caddy-auth]
+enabled  = true
+filter   = caddy-auth
+logpath  = ${caddy_log}
+port     = http,https
+maxretry = 10
+findtime = 10m
+bantime  = 1h
+EOF
+  ok "fail2ban caddy-auth jail written (watches ${caddy_log})"
+
+  # Jellyfin's own log names the user, which Caddy's cannot. It is only useful
+  # once Jellyfin's KnownProxies includes the compose bridge — until then every
+  # proxied request appears to come from Caddy's container address and this jail
+  # would ban the proxy, locking out the whole household. Disabled by default
+  # for exactly that reason; see docs/verification.md before enabling.
+  write_file /etc/fail2ban/filter.d/jellyfin.conf 0644 <<'EOF'
+# Managed by setup.sh. Matches Jellyfin's failed-login line.
+[Definition]
+failregex = ^.*Authentication request for .* has been denied \(IP: "<HOST>"\)\.$
+ignoreregex =
+EOF
+
+  write_file /etc/fail2ban/jail.d/jellyfin.conf 0644 <<EOF
+# Managed by setup.sh.
+#
+# enabled = false until Jellyfin's KnownProxies is set to the compose bridge
+# subnet. Without it Jellyfin logs Caddy's container IP for every proxied
+# request, and this jail bans the reverse proxy — taking the whole household
+# offline while the attacker is untouched.
+[jellyfin]
+enabled  = false
+filter   = jellyfin
+logpath  = ${CONFIG_ROOT:-/opt/mediaserver}/jellyfin/log/*.log
+port     = http,https
+maxretry = 10
+findtime = 10m
+bantime  = 1h
+EOF
+  warn "fail2ban jellyfin jail written but DISABLED — set Jellyfin's KnownProxies"
+  warn "  to the compose bridge subnet first, or it will ban Caddy, not the attacker."
 }
 
 install_backup_timer() {
@@ -582,6 +656,20 @@ configure_firewall() {
     warn "Set LAN_SUBNET (e.g. 192.168.1.0/24) in .env and re-run to allow it."
   fi
 
+  # The public front door. Only reached when PUBLIC_DOMAIN is set, so a
+  # tailnet-and-LAN-only box stays exactly as it was.
+  #
+  # Caddy serves three names here — the landing page, Jellyfin and Jellyseerr.
+  # The six admin apps are not routed through it at all, so opening 80 and 443
+  # exposes those three and nothing else (decisions.md D25, spec §5.3).
+  if [[ -n "${PUBLIC_DOMAIN:-}" ]]; then
+    run ufw allow 80/tcp
+    run ufw allow 443/tcp
+    ok "allowed 80/443 from any source for ${PUBLIC_DOMAIN}"
+  else
+    info "PUBLIC_DOMAIN unset — no public ports opened, box is LAN + tailnet only"
+  fi
+
   configure_docker_firewall
 
   run ufw --force enable
@@ -632,6 +720,19 @@ configure_docker_firewall() {
   cp "$rules" "${rules}.bak"
   ok "backed up $rules to ${rules}.bak"
 
+  # The public rules go in only when a public domain is configured. Written as a
+  # separate variable so the generated file reads the same either way.
+  local public_rules=""
+  if [[ -n "${PUBLIC_DOMAIN:-}" ]]; then
+    public_rules="# The public front door. Port-scoped rather than source-scoped because after
+# DNAT the destination is a container IP that is not stable across restarts.
+# This is safe because Caddy is the only service published on the address the
+# router forwards to: a WAN packet aimed at 8096 still DNATs to Jellyfin and
+# then falls through to the DROP below, since its dport is not 80 or 443.
+-A DOCKER-USER -p tcp --dport 80 -j RETURN
+-A DOCKER-USER -p tcp --dport 443 -j RETURN"
+  fi
+
   cat >> "$rules" <<EOF
 
 ${marker}
@@ -644,34 +745,56 @@ ${marker}
 -A DOCKER-USER -i tailscale0 -j RETURN
 -A DOCKER-USER -i lo -j RETURN
 -A DOCKER-USER -s ${LAN_SUBNET} -j RETURN
-# Anything else reaching a container from off-box is dropped. This is what
-# makes the absence of a router port forward a second line of defence rather
-# than the only one.
+${public_rules}
+# Anything else reaching a container from off-box is dropped. Without the
+# public rules above, a router port forward would silently do nothing: the
+# packet is DNAT'd, traverses FORWARD, and dies here while the router looks
+# correctly configured.
 -A DOCKER-USER -j DROP
 COMMIT
 # END MEDIASERVER DOCKER-USER
 EOF
-  ok "DOCKER-USER rules appended (tailnet + ${LAN_SUBNET} in, rest dropped)"
+  if [[ -n "${PUBLIC_DOMAIN:-}" ]]; then
+    ok "DOCKER-USER rules appended (tailnet + ${LAN_SUBNET} + public 80/443 in)"
+  else
+    ok "DOCKER-USER rules appended (tailnet + ${LAN_SUBNET} in, rest dropped)"
+  fi
   info "verify after reload:  iptables -L DOCKER-USER -n -v"
 }
 
 report() {
   step "Values for .env"
 
-  local render_gid tailscale_ip
+  local render_gid lan_ip tailscale_ip
   render_gid=$(getent group render 2>/dev/null | cut -d: -f3 || true)
+  # The address the router forwards 80/443 to, and where the Manage links point.
+  lan_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' | head -1 || true)
   tailscale_ip=$(tailscale ip -4 2>/dev/null | head -1 || true)
 
   printf '  RENDER_GID=%s\n' "${render_gid:-<none — iGPU disabled in BIOS?>}"
-  printf '  CADDY_BIND_ADDR=%s\n' "${tailscale_ip:-<none — run: tailscale up>}"
-  printf '  CADDY_DOMAIN=%s\n' "$(tailscale status --json 2>/dev/null | grep -o '"DNSName":"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/\.$//' || echo '<host>.ts.net')"
+  printf '  CADDY_BIND_ADDR=%s\n' "${lan_ip:-<none — could not detect the LAN address>}"
+  printf '  ADMIN_HOST=%s\n' "${lan_ip:-<none — could not detect the LAN address>}"
+  printf '  PUBLIC_DOMAIN=%s\n' "${PUBLIC_DOMAIN:-<your domain, e.g. media.example.com>}"
+  printf '  ACME_EMAIL=%s\n' "${ACME_EMAIL:-<contact address for the ACME account>}"
 
   step "Next"
   info "1. Put the values above into .env"
-  info "2. Verify the iGPU:  vainfo | grep -Ei 'h264|hevc'"
-  info "3. Start the stack:  docker compose up -d"
-  info "4. Prove hardlinking: ./scripts/test-hardlinks.sh"
-  info "5. Work through docs/verification.md"
+  info "2. DNS: A records for PUBLIC_DOMAIN, jellyfin.<domain>, seerr.<domain>"
+  info "   pointing at this site's WAN address."
+  info "3. Router: forward TCP 80 and 443 to ${lan_ip:-<lan-ip>}. Both — Let's"
+  info "   Encrypt validates over 80 and will not issue without it."
+  info "4. Verify the iGPU:  vainfo | grep -Ei 'h264|hevc'"
+  info "5. Start the stack:  docker compose up -d"
+  info "6. Prove hardlinking: ./scripts/test-hardlinks.sh"
+  info "7. Work through docs/verification.md"
+  echo
+  if [[ -n "$tailscale_ip" ]]; then
+    info "Tailscale is up at ${tailscale_ip} — the admin apps are reachable from"
+    info "anywhere at ${lan_ip:-<lan-ip>}:<port> once a client joins the tailnet."
+  else
+    warn "Tailscale is not up. Without it the six admin apps are LAN-only:"
+    warn "  curl -fsSL https://tailscale.com/install.sh | sh && tailscale up"
+  fi
   echo
 }
 

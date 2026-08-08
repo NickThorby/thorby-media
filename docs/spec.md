@@ -269,32 +269,46 @@ browser playback and remote clients.
 
 ### 5.1 Access model
 
-- **Local LAN:** direct access to all services by IP and port
-- **Remote:** Tailscale only. No router port forwarding. Nothing listens on
-  the public IP.
+There are two doors, and which one you use depends on who you are.
+
+- **The household — public.** `media.thorby.tech` over the internet: the landing
+  page, Jellyfin and Jellyseerr, and nothing else. Ports 80 and 443 are
+  forwarded from the router to Caddy. No VPN, no app to install.
+- **The administrator — Tailscale.** The six admin apps are reached at
+  `<lan-ip>:<port>`, directly, with no proxy in front of them. On the LAN that
+  works already; from anywhere else, join the tailnet first. Nothing about them
+  is public, and nothing about them is routed.
+- **Local LAN:** direct access to all services by IP and port, unchanged.
 - **Apple TV:** Infuse connects to Jellyfin over LAN. For remote playback,
   install Tailscale on the Apple TV.
 
+The asymmetry is the point. The two apps the household needs are the two whose
+worst case is a leaked media library; the six it does not need are the ones whose
+worst case is a shell (§5.3).
+
 ### 5.2 Caddy
 
-Caddy binds **only to the Tailscale interface**, providing hostnames and valid
-TLS for the admin UIs without any public exposure.
+Caddy serves **three names and no more**, on the LAN address the router forwards
+to. Certificates come from Let's Encrypt over HTTP-01, which requires both 80
+and 443 to be forwarded.
 
 Reverse proxy targets:
 
-- `<host>.ts.net` -> the landing page (static, served by Caddy itself)
-- `jellyfin.<host>.ts.net` -> `jellyfin:8096`
-- `seerr.<host>.ts.net` -> `jellyseerr:5055`
-- `sonarr.<host>.ts.net` -> `sonarr:8989`
-- `radarr.<host>.ts.net` -> `radarr:7878`
-- `prowlarr.<host>.ts.net` -> `prowlarr:9696`
-- `bazarr.<host>.ts.net` -> `bazarr:6767`
-- `qbit.<host>.ts.net` -> `qbittorrent:8080`
-- `sab.<host>.ts.net` -> `sabnzbd:8080`
+- `media.thorby.tech` -> the landing page (static, served by Caddy itself)
+- `jellyfin.media.thorby.tech` -> `jellyfin:8096`
+- `seerr.media.thorby.tech` -> `jellyseerr:5055`
 
-Caddy also writes a JSON access log. It is the only remote entry point and none
-of the apps behind it record who reached them, so it is the only place an access
-record can exist at all.
+Sonarr, Radarr, Prowlarr, Bazarr, qBittorrent and SABnzbd have **no route here
+and no DNS record**. That is the mechanism enforcing §5.3 — not a firewall rule
+that could be edited, not a password that could be weak, but the absence of any
+path from the internet to them. `scripts/validate.sh` fails if one of those six
+names appears in `caddy/sites.caddy` at all.
+
+Caddy also writes a JSON access log. It is the only entry point from the internet
+and none of the apps behind it record who reached them, so it is the only place
+an access record can exist. It is also what the fail2ban `caddy-auth` jail reads,
+and the only log that sees the true client address — Jellyfin and Jellyseerr both
+see Caddy's container IP unless `KnownProxies` says otherwise.
 
 ### 5.3 Security constraints
 
@@ -304,12 +318,24 @@ is arbitrary command execution by design; a valid session is equivalent to a
 shell. The *arr apps authenticate API access by a key visible in their own UI.
 Neither was designed for hostile network exposure.
 
+Since §5.1 now forwards ports from the router, this constraint needs a
+mechanism rather than a promise. It has three, in order of how hard they are to
+undo by accident:
+
+1. **No route.** Those six are absent from `caddy/sites.caddy`, so the proxy has
+   nowhere to send a request for them even if one arrived. Asserted by
+   `validate.sh`.
+2. **No DNS.** Only three names exist publicly. Nothing resolves to the box for
+   the other six.
+3. **No packet.** The `DOCKER-USER` chain returns only ports 80 and 443 from
+   off-box; a WAN packet aimed at 8989 is DNAT'd to Sonarr and then dropped.
+
 Additionally:
 
 - Change qBittorrent's default credentials on first login
 - Enable authentication in every *arr app
 - Leave qBittorrent's external-program setting empty
-- UFW: allow SSH and the Tailscale interface; deny inbound otherwise
+- UFW: allow SSH, the Tailscale interface, the LAN, and 80/443; deny otherwise
 
 None of these can be left to a human remembering. Each is either pinned in
 configuration or asserted by `scripts/audit-auth.sh`, which is run against the

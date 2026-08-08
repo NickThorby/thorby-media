@@ -199,8 +199,9 @@ else
       bad "qBittorrent: authentication is bypassed for $(jq -r '.bypass_auth_subnet_whitelist' <<<"$prefs")"
     fi
 
-    # Deliberately off (decisions.md D13) so qbit.<host>.ts.net works at all.
-    # CSRF protection is the one that matters and must stay on.
+    # Deliberately off (decisions.md D13) so a remapped host port works at all.
+    # CSRF protection is the one that matters and must stay on — especially now
+    # that D13's original mitigation, "no port forwarding", no longer holds.
     if [[ "$(jq -r '.web_ui_csrf_protection_enabled' <<<"$prefs")" == "true" ]]; then
       ok "qBittorrent: CSRF protection on"
     else

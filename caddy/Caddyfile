@@ -1,29 +1,38 @@
 # Production Caddyfile — Debian target.
 #
-# No TLS configuration is needed. Caddy 2.5+ recognises a *.ts.net site address
-# and fetches the certificate from the local tailscaled over its unix socket,
-# which docker-compose.yml mounts in. Requirements on the target:
+# Certificates come from Let's Encrypt over HTTP-01, which needs BOTH :80 and
+# :443 forwarded from the router to CADDY_BIND_ADDR. Three names are issued:
+# the bare PUBLIC_DOMAIN plus jellyfin. and seerr.
 #
-#   - HTTPS Certificates and MagicDNS enabled for the tailnet in the Tailscale
-#     admin console. Without these no certificate can be issued at all.
-#   - CADDY_DOMAIN set to the machine's fully qualified tailnet name.
-#   - Caddy reachable only on the tailnet — enforced by publishing its ports to
-#     CADDY_BIND_ADDR (the tailnet IP), not 0.0.0.0.
+# Not DNS-01 with a wildcard: that needs a provider plugin, which means building
+# a custom Caddy image, and nothing else in this repo has a build step.
 #
-# Fallback if the socket route misbehaves: run `tailscale cert` on the host to
-# write cert and key files, mount them read-only, and add an explicit
-# `tls <cert> <key>` to each site block in sites.caddy.
+# Requirements on the target:
+#
+#   - A, or AAAA, records for PUBLIC_DOMAIN, jellyfin.PUBLIC_DOMAIN and
+#     seerr.PUBLIC_DOMAIN pointing at the WAN address.
+#   - Router forwarding 80 and 443 to CADDY_BIND_ADDR, the box's LAN address.
+#   - ACME_EMAIL set — Let's Encrypt uses it for expiry warnings.
+#
+# There is no tailscaled socket mounted any more. It existed only to fetch
+# *.ts.net certificates, and those are gone; admin apps are reached directly at
+# <lan-ip>:<port> over Tailscale rather than proxied (decisions.md D25).
+
+{
+	email {$ACME_EMAIL}
+}
 
 # Imported by every site in sites.caddy.
 #
-# The log is the point. Caddy is the only remote entry point into this stack and
-# none of the apps behind it record who reached them, so without this there is
-# no way to answer "has anyone else touched this box".
+# The log is the point. Caddy is the only entry point from the internet and none
+# of the apps behind it record who reached them, so without this there is no way
+# to answer "has anyone else touched this box". It is also what the fail2ban
+# caddy-auth jail reads, so the format is load-bearing, not just diagnostic.
 #
 # The headers are baseline hardening, not the load-bearing control — auth is
 # enforced by each app, and scripts/audit-auth.sh is what proves it. There is
-# deliberately no Content-Security-Policy: the *arr UIs, Jellyfin's web client
-# and Jellyseerr all depend on inline scripts and break under a strict one.
+# deliberately no Content-Security-Policy: Jellyfin's web client and Jellyseerr
+# both depend on inline scripts and break under a strict one.
 (common) {
 	log {
 		output file /var/log/caddy/access.log {
@@ -33,14 +42,30 @@
 		format json
 	}
 	header {
-		# Everything here is tailnet-only and HTTPS-only, so pinning costs
-		# nothing. Not set in the dev Caddyfile — on localhost it would pin
-		# every *.localhost host to HTTPS in the browser for a year.
+		# A real domain over HTTPS only, so pinning costs nothing. Not set in
+		# the dev Caddyfile, where it would pin the dev hostname to HTTPS in the
+		# browser for a year and outlive the stack.
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer"
 		-Server
 	}
+}
+
+# Tags requests that came from the LAN or the tailnet, so the landing page can
+# show the Manage section to the administrator and not to the internet.
+#
+# This is presentation, not access control. The six admin apps are unreachable
+# through this proxy because they have no route in sites.caddy and no DNS
+# record — not because a link is hidden. Treat this snippet as cosmetic and the
+# absence of the routes as the boundary.
+#
+# 100.64.0.0/10 is the CGNAT range Tailscale assigns from; the other three are
+# RFC1918. Defined here rather than in sites.caddy because the dev box needs a
+# different set — see Caddyfile.dev.
+(private_only) {
+	@private remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10
+	request_header @private X-Admin-Visible 1
 }
 
 import sites.caddy

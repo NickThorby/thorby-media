@@ -22,15 +22,22 @@ because Caddy is the remote-access path.
 Consequence: if this box is ever moved to an untrusted network, the model breaks.
 The assumption is a trusted home LAN behind NAT.
 
-### D2. Caddy binds to the tailnet IP via the port publish
+### D2. Caddy binds one address via the port publish
 
-`ports: - "${TAILSCALE_IP}:443:443"` rather than host networking or a bind
+`ports: - "${CADDY_BIND_ADDR}:443:443"` rather than host networking or a bind
 directive inside the Caddyfile. Docker's publish address is the simplest
-enforcement point, it fails closed if `TAILSCALE_IP` is wrong (Caddy won't
-start), and it keeps Caddy on the compose bridge network so it can reach the
-other services by container name.
+enforcement point, it fails closed if the address is wrong (Caddy won't start),
+and it keeps Caddy on the compose bridge network so it can reach the other
+services by container name.
 
-`TAILSCALE_IP` therefore lives in `.env` and is host-specific.
+The address itself is host-specific and lives in `.env`.
+
+**Superseded in part by D25.** `CADDY_BIND_ADDR` was the tailnet IP; it is now
+the LAN address the router forwards 80 and 443 to. The mechanism and its
+rationale are unchanged — a specific address, never a wildcard, enforced by
+Docker rather than by Caddy config. A `bind` directive would not have worked
+anyway: Caddy binds inside its own network namespace, where the tailnet address
+does not exist.
 
 ### D3. `restart: unless-stopped` on every service
 
@@ -134,8 +141,9 @@ They live only in `.env`, which is gitignored.
 
 qBittorrent 5.x validates the `Host` header on every request and rejects
 anything unexpected with a bare `401` — including requests arriving through
-Caddy, and requests to a remapped host port. Left on, `qbit.<host>.ts.net` is
-unusable and so is any port other than 8080.
+Caddy, and requests to a remapped host port. Left on, any port other than 8080
+is unusable — which is exactly how it is reached now that D25 stopped proxying
+it and the only path is `<lan-ip>:<port>`.
 
 `provision.sh` therefore sets `web_ui_host_header_validation_enabled=false`.
 
@@ -144,8 +152,16 @@ only the host-header check was blocking access, so CSRF protection costs nothing
 to keep — and it is much the more valuable of the two here, since a valid
 qBittorrent session is effectively a shell (spec §5.3).
 
-The residual risk of disabling host-header validation is DNS rebinding, which is
-mitigated by the box being LAN- and tailnet-only with no port forwarding.
+The residual risk of disabling host-header validation is DNS rebinding.
+
+That was originally mitigated by "the box is LAN- and tailnet-only with no port
+forwarding", which **stopped being true in D25** — the router now forwards 80
+and 443. The conclusion survives, but for a different reason, and it is worth
+being explicit rather than leaving a stale justification in place: qBittorrent
+has no public route, no public DNS record and no path through `DOCKER-USER`, so
+there is no name an attacker can rebind that reaches it. A rebinding attack now
+needs a browser already inside the LAN or the tailnet — the same position it
+needed before.
 
 ### D14. SABnzbd runs alongside qBittorrent, not instead of it
 
@@ -181,9 +197,15 @@ a bare `403`. The default contains only the container's own ID, so
 `http://sabnzbd:8080` from Sonarr is refused and so is anything through Caddy —
 the same class of failure as D13, and just as opaque.
 
-`provision.sh` sets it to `sabnzbd,localhost,sab.${CADDY_DOMAIN}`. This is a
-whitelist rather than a blanket disable, so it is a tighter fix than the one
-qBittorrent needed.
+`provision.sh` sets it to `sabnzbd,localhost,${ADMIN_HOST}`. This is a whitelist
+rather than a blanket disable, so it is a tighter fix than the one qBittorrent
+needed.
+
+Updated by D25: the entry used to be `sab.${CADDY_DOMAIN}`, the proxy hostname.
+SABnzbd is no longer proxied, so what has to be accepted is the bare LAN address
+it is now reached at. Verified that SABnzbd accepts an IP in the `Host` header
+without it being listed — a direct hit returns the login redirect, not a 403 —
+but it is listed anyway rather than relying on that.
 
 Unlike the *arrs, SABnzbd has no environment variable to pin its API key, so
 `provision.sh` reads it back out of `sabnzbd.ini` instead of asking you to copy
@@ -230,9 +252,13 @@ Links are derived at runtime from `location.host`:
 el.href = `${location.protocol}//${el.dataset.sub}.${location.host}`;
 ```
 
-One file therefore works at both `<host>.ts.net` and `localhost:8443`, port
-included. A server-side template on `{$CADDY_DOMAIN}` would lose the dev port,
+One file therefore works at both the real domain and a dev hostname, port
+included. A server-side template on the domain variable would lose the dev port,
 since that variable carries no port.
+
+Two later amendments: the variable is now `{$PUBLIC_DOMAIN}` (D25), and this
+derivation applies to the **two public tiles only** — the admin chips point at
+`<lan-ip>:<port>` and are rendered server-side, because nothing proxies them.
 
 All of the above still holds. Two of its literal claims no longer do: there is
 now a third file, `app.js`, and the page makes same-origin requests of its own
@@ -304,14 +330,21 @@ cert-issuing endpoint, and Caddy in `caddy:alpine` runs as root — so a Caddy
 compromise reaches the tailnet, not just the proxy. `:ro` on a socket restricts
 nothing.
 
-Accepted rather than fixed, because both alternatives need a real tailnet to
-validate and there isn't one yet:
+Accepted rather than fixed, because both alternatives needed a real tailnet to
+validate and there wasn't one:
 
 1. Run Caddy as a non-root user and set `TS_PERMIT_CERT_UID` on tailscaled.
 2. Issue with `tailscale cert` on the host, mount the cert and key read-only,
    and add an explicit `tls` directive — no socket in the container at all.
 
-Revisit when Q1 and Q2 are closed. Option 2 is the smaller blast radius.
+**Resolved by D25 — a third way neither option anticipated.** The socket existed
+only to fetch `*.ts.net` certificates. D25 stops using `.ts.net` names entirely,
+so the mount is gone and the risk with it. Review finding S7 is closed.
+
+Worth noting the timing: this became urgent rather than merely accepted the
+moment Caddy started facing the internet. An accepted risk is a judgement about
+a threat model, and the threat model changed. `validate.sh` now fails if any
+service mounts that socket, so it cannot drift back in.
 
 ### D22. Config backups exist, and go on the media disk
 
@@ -421,16 +454,75 @@ The first is the one that matters, and it is why zero external requests is now
 invariant 7 in `CLAUDE.md`: a CDN link renders perfectly on the dev Mac, which
 has internet, and a broken page on the tailnet, which is not guaranteed any.
 
+### D25. Two doors: a public one for the household, Tailscale for the administrator
+
+The household needs to watch and request without installing anything, so
+Jellyfin and Jellyseerr go on a real domain with the router forwarding 80 and
+443. The six admin apps must not follow them there — spec §5.3 is right that
+qBittorrent's completion program and SABnzbd's post-processing are arbitrary
+command execution, and a session on either is a shell on a box holding 8 TB.
+
+This reverses the "nothing is exposed" half of D1 and invariant 4. It does not
+reverse §5.3, and the work here is making that difference mechanical.
+
+**The simplification that made it small.** A VPN puts you on the LAN, and
+`BIND_ADDR` already publishes every admin app there by IP and port. So remote
+administration needs no proxy, no certificates and no hostnames — it needs
+`http://<lan-ip>:8989` and a tailnet. Once that is accepted, the second Caddy
+container this change originally called for disappears, and so does most of the
+rest. The version with pretty admin hostnames was the complicated one.
+
+**Three mechanisms, not one promise.** The six are excluded by having no route
+in `sites.caddy`, no public DNS record, and no path through `DOCKER-USER`, which
+returns only 80 and 443 from off-box. Any one would do. Having three means
+adding a route by mistake does not expose anything, and `validate.sh` fails if
+one of those six names appears in the routes file at all — including in a
+comment, because a commented-out block is one keystroke from live.
+
+**What `*.ts.net` never was.** The old design routed all nine apps at
+`<sub>.<host>.ts.net`. MagicDNS gives a node exactly one name and does not
+resolve subdomains of it, and `tailscale cert` only issues for a node's own
+FQDN — so those eight names would very likely have resolved to nothing and
+obtained no certificate. Never verified either way, because there was never a
+tailnet; now moot, since nothing depends on them. Q1 and Q2 close with it.
+
+**Certificates.** Let's Encrypt over HTTP-01, three names. That needs port 80
+forwarded as well as 443, which is easy to forget and fails at issuance rather
+than at request time. Not DNS-01 with a wildcard: that needs a provider plugin,
+which means building a custom Caddy image, and nothing else here has a build
+step.
+
+**Hiding Manage is presentation, not access control.** Caddy tags requests from
+RFC1918 and the Tailscale CGNAT range with a header, and the landing page
+template renders the admin section only when it is present. Say it plainly
+wherever it comes up: the boundary is the absent route, not the absent link.
+The snippet lives in each Caddyfile rather than the shared routes file because
+the dev box needs a wider range — Docker Desktop rewrites every client address
+to a synthetic `172.67.x`, which is outside RFC1918 since the /12 stops at
+172.31. Same quirk that made SABnzbd refuse every caller.
+
+Admin links are `<lan-ip>:<port>`, templated from the environment rather than
+written into the page, so `.env` stays the only place a host port is recorded.
+`app.js` therefore derives hrefs for the two public tiles only, and guards its
+`.manage` listener — that element is absent entirely for public clients, and an
+unguarded `querySelector` would throw on the one page that must never look
+broken.
+
+**Admin UIs are plain HTTP.** Encrypted in transit by WireGuard over the tailnet;
+plaintext on the LAN, which was already true under §5.1. TLS for names that
+resolve only privately is exactly the complexity this decision removes.
+
+**fail2ban watches Caddy, not Jellyfin.** Caddy's JSON access log is the only
+one that records the true client address, so a jail on it can ban an attacker;
+a jail on Jellyfin's log would ban Caddy's container IP and take the household
+offline, unless Jellyfin's `KnownProxies` is set to the compose bridge first.
+The Jellyfin jail is written but ships **disabled** for that reason.
+
 ---
 
 ## Open
 
 Each of these blocks or shapes a deliverable. Answers go here once settled.
-
-### Q1. Tailnet hostname
-
-The Caddyfile needs the real `<host>` in `sonarr.<host>.ts.net`. Needs the
-machine joined to the tailnet first (§2.2). Placeholder until then.
 
 ### Q5. Anime: dual-audio or subtitle-only
 
@@ -445,7 +537,7 @@ Not blocking — it can be set when the library is first populated.
 
 ## Closed
 
-### Q2 → Caddy fetches `*.ts.net` certs from tailscaled automatically *(D2, D11)*
+### Q2 → moot: no `.ts.net` names remain *(D25)*
 
 Caddy 2.5+ recognises a `*.ts.net` site address and obtains the certificate from
 the local Tailscale daemon with **no Caddyfile configuration at all**. The
@@ -488,3 +580,10 @@ the script refuses any device carrying a filesystem or partition table, telling
 the operator to run `wipefs` manually if they really mean it. Verified against
 real loopback devices — it refuses a populated one and proceeds on a blank one.
 Combined with `--dry-run`, the script cannot be the thing that destroys data.
+
+### Q1 → moot: the tailnet hostname is never used *(D25)*
+
+The Caddyfile needed the real `<host>` for `sonarr.<host>.ts.net`. Those routes
+no longer exist — admin apps are reached at `<lan-ip>:<port>` over the tailnet,
+which needs no hostname at all. Nothing in the repo now references a `.ts.net`
+name, so there is nothing left to fill in.

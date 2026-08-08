@@ -94,23 +94,57 @@ df -h /data                          # ...will exceed actual used space if hardl
 
 - [ ] Passes
 
-## 5. All services reachable over Tailscale, none over the public IP
+## 5. Three names public, six apps not — and the certificates issue
+
+The single most important check in this file. Three separate mechanisms are
+supposed to keep the admin apps off the internet (D25); verify each, because
+any one of them silently doing nothing still leaves the other two working.
+
+**Certificates.** Requires both 80 and 443 forwarded — Let's Encrypt validates
+over 80, and if only 443 is forwarded issuance fails while everything looks
+correct:
 
 ```bash
-tailscale ip -4                                  # the tailnet address
-curl -sI https://jellyfin.<host>.ts.net | head -1
-ss -tlnp | grep -E '443|8096|8989|7878|9696|6767|8080'
+curl -sI https://<domain>            | head -1   # 200
+curl -sI https://jellyfin.<domain>   | head -1   # 200 or a redirect to login
+curl -sI https://seerr.<domain>      | head -1   # 200 or a redirect to login
+docker compose logs caddy | grep -i 'certificate obtained'
 ```
 
-Caddy's 80/443 must be bound to the tailnet IP only, not `0.0.0.0`. Service
-ports bound on the LAN are expected and intended (see D1 in `decisions.md`).
-
-Then confirm the outside is closed: from a network off the tailnet and off the
-LAN, attempt to reach the WAN IP on 80, 443, 8096, and 8080. All must fail.
-Confirm the router has **no port forwarding rules** pointing at this box.
+**No DNS for the six.** Each must return nothing at all:
 
 ```bash
-ufw status verbose        # SSH + tailscale0 allowed, default deny incoming
+for h in sonarr radarr prowlarr bazarr qbit sab; do
+  printf '%-9s %s\n' "$h" "$(dig +short "$h.<domain>" | tr '\n' ' ')"
+done
+```
+
+**No route even if DNS existed.** Force the Host header past DNS:
+
+```bash
+curl -sk -o /dev/null -w '%{http_code}\n' --resolve "sonarr.<domain>:443:<wan-ip>" \
+  "https://sonarr.<domain>/"
+```
+
+Anything other than a proxied 200 is correct — Caddy has no site for that name.
+
+**No packet.** From a host on neither the LAN nor the tailnet — a phone on
+mobile data will do:
+
+```bash
+nmap -Pn -p 80,443,8096,8080,8989,7878,5055,6767,9696 <wan-ip>
+```
+
+Only 80 and 443 open; everything else filtered or closed.
+
+**Admin access still works.** With Tailscale up on the client:
+
+```bash
+curl -sI http://<lan-ip>:8989 | head -1
+```
+
+```bash
+ufw status verbose        # SSH, tailscale0, LAN, and 80/443 allowed
 ```
 
 - [ ] Passes
@@ -173,9 +207,15 @@ never `INPUT`. Confirm the `DOCKER-USER` rules are loaded (decisions.md D19):
 sudo iptables -L DOCKER-USER -n -v
 ```
 
-Expect RETURN rules for established traffic, `lo`, `tailscale0` and the LAN
-subnet, then a final DROP. If the chain is empty, `setup.sh` skipped the step —
-almost certainly because `LAN_SUBNET` is unset in `.env`.
+Expect RETURN rules for established traffic, `lo`, `tailscale0`, the LAN subnet
+and **tcp dports 80 and 443**, then a final DROP. If the chain is empty,
+`setup.sh` skipped the step — almost certainly because `LAN_SUBNET` is unset in
+`.env`.
+
+The two port rules are what make the router forward work at all. Without them
+the packet is DNAT'd, traverses `FORWARD`, and dies at the DROP while the router
+configuration looks perfectly correct — so the symptom is "my domain times out"
+with nothing in Caddy's log.
 
 Then prove it from off-box, on a host that is neither on the LAN nor the tailnet
 (a phone on mobile data is enough):
@@ -252,5 +292,48 @@ rm -rf /tmp/restore-test
 
 `integrity_check` must return `ok`. Anything else means the database was copied
 mid-write and the backup is worthless.
+
+- [ ] Passes
+
+## 12. The landing page hides Manage from the internet
+
+Presentation, not a control — but if it is wrong, the page is advertising
+hostnames it should not. Check both sides.
+
+From a LAN or tailnet client:
+
+```bash
+curl -s https://<domain>/ | grep -c 'class="manage"'      # 1
+curl -s https://<domain>/ | grep -c '{{'                  # 0 — templates ran
+curl -s https://<domain>/ | grep -o 'http://[^"]*'        # <lan-ip>:<port> links
+```
+
+From off-network (phone on mobile data, or any host outside RFC1918):
+
+```bash
+curl -s https://<domain>/ | grep -c 'class="manage"'      # 0
+```
+
+A count of `{{` above zero means `templates` is missing from the site block, in
+which case the conditional leaks as literal text **and** the admin section
+renders publicly. `validate.sh` catches that statically; this catches it live.
+
+- [ ] Passes
+
+## 13. fail2ban bans a real client address
+
+```bash
+sudo fail2ban-client status                # caddy-auth listed and enabled
+sudo fail2ban-client status caddy-auth
+```
+
+Fail a Jellyfin login ten times from a device off the LAN, then re-check — the
+banned IP must be **that device's address**, not Caddy's container IP. If it is
+the container IP, the jail is reading the wrong log or Jellyfin's `KnownProxies`
+is unset, and leaving it enabled would lock the household out.
+
+The `jellyfin` jail ships **disabled** for exactly that reason. Enable it only
+after setting `KnownProxies` to the compose bridge subnet in Jellyfin's network
+settings, and re-run this check.
 
 - [ ] Passes

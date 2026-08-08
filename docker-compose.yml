@@ -301,9 +301,12 @@ services:
         condition: service_healthy
 
   # ── Reverse proxy ──────────────────────────────────────────────────────────
-  # The only service bound to the tailnet interface rather than the LAN.
-  # Caddy 2.5+ fetches *.ts.net certificates from the local tailscaled with no
-  # Caddyfile configuration — hence the socket mount.
+  # The public front door, and the only thing reachable from the internet. It
+  # routes exactly three names — the landing page, Jellyfin and Jellyseerr.
+  #
+  # The six admin apps are NOT proxied. They are reached at <lan-ip>:<port>, on
+  # the LAN or over Tailscale, so there is no public route to them to get wrong
+  # (decisions.md D25, spec §5.3).
   caddy:
     image: caddy:alpine
     container_name: caddy
@@ -311,7 +314,20 @@ services:
     logging: *logging
     security_opt: *security
     environment:
-      CADDY_DOMAIN: ${CADDY_DOMAIN:?CADDY_DOMAIN is unset, e.g. myhost.ts.net}
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?PUBLIC_DOMAIN is unset, e.g. media.example.com}
+      # Let's Encrypt expiry warnings. Required rather than defaulted: a silent
+      # fallback to no contact address means no warning when renewal breaks.
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is unset — Let's Encrypt needs a contact address}
+      # The address the Manage links point at, and the ports they use. Templated
+      # into the landing page at request time so .env stays the only place a
+      # host port is written down.
+      ADMIN_HOST: ${ADMIN_HOST:?ADMIN_HOST is unset — the LAN address of this box}
+      SONARR_PORT: ${SONARR_PORT:-8989}
+      RADARR_PORT: ${RADARR_PORT:-7878}
+      PROWLARR_PORT: ${PROWLARR_PORT:-9696}
+      BAZARR_PORT: ${BAZARR_PORT:-6767}
+      SAB_PORT: ${SAB_PORT:-8085}
+      QBIT_PORT: ${QBIT_PORT:-8080}
       # Relocated off Caddy's default /data. In this stack /data means the media
       # root in every container; having one container where it means something
       # else is exactly the ambiguity that causes mistakes later.
@@ -325,32 +341,24 @@ services:
       - ./caddy/site:/srv/site:ro
       - ${CONFIG_ROOT:-/opt/mediaserver}/caddy/data:/caddydata
       - ${CONFIG_ROOT:-/opt/mediaserver}/caddy/config:/config
-      # Access logs. Caddy is the only remote entry point, so without this there
-      # is no record anywhere of who reached which admin UI.
+      # Access logs. Caddy is the only entry point from the internet, so without
+      # this there is no record of who reached what. Also the input to the
+      # fail2ban caddy-auth jail, so the format is load-bearing.
       - ${CONFIG_ROOT:-/opt/mediaserver}/caddy/logs:/var/log/caddy
-      # Broad: this socket is the tailnet control API, not just cert issuance,
-      # so a Caddy compromise reaches the tailnet. Accepted for now — see
-      # decisions.md D21 for the non-root alternative and why it is deferred.
-      - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock:ro
+      # No tailscaled socket. It existed only to fetch *.ts.net certificates;
+      # those are gone, and with them the accepted risk that a Caddy compromise
+      # reached the tailnet control API (review-2026-08 S7, decisions.md D21).
     ports:
-      - "${CADDY_BIND_ADDR:?CADDY_BIND_ADDR is unset. On the target run: tailscale ip -4}:${CADDY_HTTP_PORT:-80}:80"
-      - "${CADDY_BIND_ADDR:?CADDY_BIND_ADDR is unset. On the target run: tailscale ip -4}:${CADDY_HTTPS_PORT:-443}:443"
+      # The LAN address the router forwards 80 and 443 to. A specific address,
+      # never a wildcard — 0.0.0.0 here would collide with nothing today but
+      # removes the one line of defence that survives a bad router rule.
+      - "${CADDY_BIND_ADDR:?CADDY_BIND_ADDR is unset — the LAN address the router forwards to}:${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_BIND_ADDR:?CADDY_BIND_ADDR is unset — the LAN address the router forwards to}:${CADDY_HTTPS_PORT:-443}:443"
     # Health-gated: started-but-not-listening backends make Caddy serve 502s for
-    # the first minute after a reboot, which reads as a broken stack.
+    # the first minute after a reboot, which reads as a broken stack. Only the
+    # two services it actually proxies.
     depends_on:
       jellyfin:
-        condition: service_healthy
-      prowlarr:
-        condition: service_healthy
-      sonarr:
-        condition: service_healthy
-      radarr:
-        condition: service_healthy
-      bazarr:
-        condition: service_healthy
-      qbittorrent:
-        condition: service_healthy
-      sabnzbd:
         condition: service_healthy
       jellyseerr:
         condition: service_healthy
