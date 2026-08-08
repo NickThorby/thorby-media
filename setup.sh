@@ -634,18 +634,20 @@ configure_wireguard_host() {
 
   if [[ -f "$modconf" ]]; then
     ok "$modconf already present"
-  elif $DRY_RUN; then
-    printf '  \033[36m[dry-run]\033[0m write %s\n' "$modconf"
   else
-    echo wireguard > "$modconf"
-    ok "wireguard module will load at boot ($modconf)"
+    write_file "$modconf" 0644 <<'EOF'
+# Managed by setup.sh. wg-easy drops SYS_MODULE, so it cannot load this itself.
+wireguard
+EOF
   fi
 
   if lsmod 2>/dev/null | grep -q '^wireguard'; then
     ok "wireguard module loaded"
+  elif run modprobe wireguard; then
+    ok "wireguard module loaded"
   else
-    run modprobe wireguard && ok "wireguard module loaded" \
-      || warn "modprobe wireguard failed — wg0 will not come up"
+    warn "modprobe wireguard failed — wg0 will not come up. Expected inside a"
+    warn "  container; on the box, check the kernel has the module."
   fi
 
   # ip_forward is what lets a peer's packets reach anything but this box.
@@ -653,20 +655,25 @@ configure_wireguard_host() {
   # and survives a boot where Docker is masked or slow.
   if [[ -f "$sysconf" ]]; then
     ok "$sysconf already present"
-  elif $DRY_RUN; then
-    printf '  \033[36m[dry-run]\033[0m write %s and reload sysctl\n' "$sysconf"
   else
-    cat > "$sysconf" <<'EOF'
+    write_file "$sysconf" 0644 <<'EOF'
 # Managed by setup.sh — required by the wg-easy container, which runs with host
-# networking and therefore cannot set these itself.
+# networking and therefore cannot set these itself (decisions.md D26).
 net.ipv4.ip_forward=1
 net.ipv4.conf.all.src_valid_mark=1
 net.ipv6.conf.all.disable_ipv6=0
 net.ipv6.conf.all.forwarding=1
 net.ipv6.conf.default.forwarding=1
 EOF
-    run sysctl --system >/dev/null
-    ok "forwarding sysctls applied ($sysconf)"
+    # Tolerant rather than fatal: /proc/sys is read-only in an unprivileged
+    # container, and `set -e` on a bare `sysctl --system` would abort the whole
+    # script there — the same failure shape as the DRY_RUN bug in preflight().
+    if run sysctl --system >/dev/null 2>&1; then
+      ok "forwarding sysctls applied"
+    else
+      warn "sysctl --system failed — the file is written but not yet active."
+      warn "  Apply with: sysctl --system"
+    fi
   fi
 }
 
