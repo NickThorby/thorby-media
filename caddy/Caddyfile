@@ -14,4 +14,33 @@
 # write cert and key files, mount them read-only, and add an explicit
 # `tls <cert> <key>` to each site block in sites.caddy.
 
+# Imported by every site in sites.caddy.
+#
+# The log is the point. Caddy is the only remote entry point into this stack and
+# none of the apps behind it record who reached them, so without this there is
+# no way to answer "has anyone else touched this box".
+#
+# The headers are baseline hardening, not the load-bearing control — auth is
+# enforced by each app, and scripts/audit-auth.sh is what proves it. There is
+# deliberately no Content-Security-Policy: the *arr UIs, Jellyfin's web client
+# and Jellyseerr all depend on inline scripts and break under a strict one.
+(common) {
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format json
+	}
+	header {
+		# Everything here is tailnet-only and HTTPS-only, so pinning costs
+		# nothing. Not set in the dev Caddyfile — on localhost it would pin
+		# every *.localhost host to HTTPS in the browser for a year.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}
+
 import sites.caddy

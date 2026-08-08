@@ -136,14 +136,56 @@ smartctl -a /dev/disk/by-uuid/<disk1-uuid> | grep -E 'Reallocated|Pending|Uncorr
 
 - [ ] Passes
 
-## 7. qBittorrent default credentials changed
+## 7. Every app enforces authentication
 
-Default is `admin` with a temporary password printed to the container log on
-first start. Change it in Settings → Web UI, and confirm the old one no longer
-works.
+`provision.sh` now sets qBittorrent's password from `.env` rather than leaving it
+to a first login, so this is no longer a manual step — but it is still worth
+confirming, along with everything else that can be switched off in a UI.
 
-While there, confirm **Run external program on torrent completion is empty**
-(§5.3 — it is arbitrary command execution).
+```bash
+./scripts/audit-auth.sh
+```
+
+All checks must pass. It covers the *arr authentication method and scope, the
+API keys, qBittorrent's session enforcement and external-program setting,
+SABnzbd's login and `inet_exposure`, Bazarr's form auth, Jellyfin's setup wizard
+and Jellyseerr's initialisation.
+
+Two of those deserve a manual look because they are the ones a UI can undo:
+
+- qBittorrent → Settings → Web UI: **Run external program on torrent completion
+  is empty** (§5.3 — arbitrary command execution).
+- Sonarr/Radarr/Prowlarr → Settings → General: authentication is **required for
+  everyone**, not "disabled for local addresses". Caddy reaches these apps over
+  the compose bridge, so the local-addresses exemption applies to every proxied
+  request and leaves the admin UI open. The setting is pinned in
+  `docker-compose.yml` and reverts on restart, but it can be wrong until then.
+
+- [ ] Passes
+
+## 7a. UFW actually filters the container ports
+
+The one that looks fine and is not. `ufw status` reporting default-deny says
+nothing about Docker-published ports: they are DNAT'd and traverse `FORWARD`,
+never `INPUT`. Confirm the `DOCKER-USER` rules are loaded (decisions.md D19):
+
+```bash
+sudo iptables -L DOCKER-USER -n -v
+```
+
+Expect RETURN rules for established traffic, `lo`, `tailscale0` and the LAN
+subnet, then a final DROP. If the chain is empty, `setup.sh` skipped the step —
+almost certainly because `LAN_SUBNET` is unset in `.env`.
+
+Then prove it from off-box, on a host that is neither on the LAN nor the tailnet
+(a phone on mobile data is enough):
+
+```bash
+nmap -Pn -p 80,443,8096,8080,8989,7878,5055 <public-ip>
+```
+
+All filtered or closed. Item 5 tests the same thing but was written assuming UFW
+was what enforced it.
 
 - [ ] Passes
 
@@ -166,5 +208,49 @@ findmnt /mnt/disk1 && findmnt /data
 
 Both mounted. A missing bind mount here is how containers end up writing into an
 empty `/data` on the SSD.
+
+- [ ] Passes
+
+## 9. Unattended security updates and SSH hardening are live
+
+```bash
+systemctl is-enabled unattended-upgrades
+unattended-upgrade --dry-run --debug 2>&1 | tail -20
+sudo sshd -T | grep -E 'permitrootlogin|passwordauthentication'
+systemctl status fail2ban --no-pager | head -5
+sudo fail2ban-client status sshd
+```
+
+`PermitRootLogin no`. `PasswordAuthentication no` **only if** an
+`authorized_keys` file existed when `setup.sh` ran — if it says `yes`, install a
+key and re-run `setup.sh`, which deliberately refuses to lock out a box with no
+key installed.
+
+- [ ] Passes
+
+## 10. A config backup restores
+
+An untested backup is not a backup, and this is the only copy of every app
+database (decisions.md D22).
+
+```bash
+systemctl list-timers mediaserver-backup.timer --no-pager
+sudo systemctl start mediaserver-backup.service
+./scripts/backup-config.sh --list
+```
+
+Then prove the archive is actually usable — restore into a scratch path and open
+the database, rather than trusting that tar exited 0:
+
+```bash
+mkdir -p /tmp/restore-test
+tar -xzf /mnt/disk1/backups/mediaserver-config-*.tar.gz -C /tmp/restore-test
+ls /tmp/restore-test/mediaserver/
+sqlite3 /tmp/restore-test/mediaserver/sonarr/sonarr.db 'PRAGMA integrity_check;'
+rm -rf /tmp/restore-test
+```
+
+`integrity_check` must return `ok`. Anything else means the database was copied
+mid-write and the backup is worthless.
 
 - [ ] Passes

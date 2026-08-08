@@ -23,17 +23,33 @@ override layers automatically, and `docker compose up -d` needs no flags on
 either machine.
 
 ```bash
-./scripts/provision.sh --init-keys   # generate API keys into .env
+./scripts/provision.sh --init-keys   # generate API keys into .env, chmod it 0600
 docker compose up -d
 ./scripts/init-tree.sh               # create the §3.1 tree inside the volume
-./scripts/provision.sh               # wire qBittorrent, the *arrs and Prowlarr
+./scripts/provision.sh               # wire the download clients, *arrs and Prowlarr
 ./scripts/validate.sh
+./scripts/audit-auth.sh
 ./scripts/test-hardlinks.sh
 ```
 
 `provision.sh` is fully exercisable here — it talks to the same APIs it will on
-the target, so a pass locally means the wiring logic is correct. Log in to
-qBittorrent with `QBIT_USER`/`QBIT_PASS` from `.env`.
+the target, so a pass locally means the wiring logic is correct. Log in to the
+*arrs with `ARR_USER`/`ARR_PASS` and to qBittorrent with `QBIT_USER`/`QBIT_PASS`,
+all from `.env`.
+
+`audit-auth.sh` is exercisable here too, and is worth running in both directions
+— an assertion that has never been seen to fail is not evidence of anything:
+
+```bash
+# Should fail on two Sonarr checks, then pass again.
+ARR_AUTH_REQUIRED=DisabledForLocalAddresses docker compose up -d sonarr
+./scripts/audit-auth.sh ; docker compose up -d sonarr
+```
+
+Note that bash here is **3.2** (macOS ships no newer one), while the target has
+bash 5. `mapfile`, `declare -A` and safe empty-array expansion under `set -u` are
+all unavailable — use the read-loop idiom `validate.sh` and `backup-config.sh`
+already use, or a script that works on the target will fail here.
 
 Services are on loopback only: Jellyfin `:8096`, Prowlarr `:9696`, Sonarr
 `:8989`, Radarr `:7878`, Bazarr `:6767`, qBittorrent `:8081`, SABnzbd `:8085`,
@@ -61,7 +77,7 @@ DOWNLOADER=sabnzbd SRC_DIR=/data/usenet/complete/tv LABEL=usenet \
 ./scripts/validate.sh
 ```
 
-Parses the compose config, asserts that exactly the five media services mount
+Parses the compose config, asserts that exactly the six media services mount
 `/data` and that all of those mounts resolve to **one** source, confirms no
 service remaps media to a non-`/data` container path, checks Gluetun is still
 commented out, validates both Caddyfiles, and shellchecks every script.
@@ -119,6 +135,28 @@ docker run --rm -v "$PWD:/repo:ro" debian:trixie \
 `--dry-run` prints every mutation without applying any. This is also how the
 first run on the real target should start.
 
+**A dry run is not full coverage, and relying on it hid a real bug.** Steps that
+append to a file — the `DOCKER-USER` rules — are skipped under `--dry-run`, and
+until August 2026 the non-dry-run path exited silently right after preflight
+because a trailing `$DRY_RUN && warn ...` returned 1 under `set -e`. The script
+had therefore never actually run to completion anywhere. To exercise the real
+path, stub what a container cannot provide and run it **twice**, since
+idempotency is the property most likely to be wrong:
+
+```bash
+docker run --rm -v "$PWD:/repo:ro" debian:trixie bash -c '
+  apt-get update -qq && apt-get install -y -qq ufw openssh-server
+  printf "#!/bin/sh\nexit 0\n" > /usr/local/bin/systemctl
+  printf "#!/bin/sh\nexit 0\n" > /usr/local/bin/sshd
+  chmod +x /usr/local/bin/systemctl /usr/local/bin/sshd
+  cp -r /repo /work && cd /work
+  echo "LAN_SUBNET=192.168.1.0/24" >> .env
+  mkdir -p /root/.ssh && echo "ssh-ed25519 AAAAfake t@k" > /root/.ssh/authorized_keys
+  bash setup.sh --skip-packages && bash setup.sh --skip-packages
+  grep -c "BEGIN MEDIASERVER DOCKER-USER" /etc/ufw/after.rules   # must be 1
+'
+```
+
 ---
 
 ## What cannot be checked here
@@ -129,7 +167,10 @@ first run on the real target should start.
 | `*.ts.net` certificates | Requires a real tailnet and tailscaled | on target |
 | Caddy bound to the tailnet interface | No Tailscale here | on target |
 | UFW rules | Linux-only | on target |
+| `DOCKER-USER` rules taking effect | Rules are written here, never loaded | `iptables -L DOCKER-USER`, external port scan |
+| fail2ban, unattended-upgrades | No systemd in the container | on target |
 | smartd tests and alert delivery | No SATA disk, no SMART, no relay | on target |
+| The backup systemd timer firing | No systemd | on target |
 | Unattended boot after power loss | Physical | on target |
 | ext4 `-m 0`, fstab, bind mount | No real disk | on target |
 

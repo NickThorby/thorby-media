@@ -111,7 +111,15 @@ preflight() {
     die "Must run as root. Try: sudo $0 $*"
   fi
 
-  $DRY_RUN && warn "DRY RUN — nothing will be modified"
+  # Not `$DRY_RUN && warn ...`: as the last statement of a function that would
+  # return 1 whenever DRY_RUN is false, and under `set -e` a non-zero return
+  # from a top-level call exits the script. That silently aborted every real
+  # (non-dry-run) invocation immediately after this step, which is exactly the
+  # path that was never exercised because container testing always passes
+  # --dry-run.
+  if $DRY_RUN; then
+    warn "DRY RUN — nothing will be modified"
+  fi
 }
 
 # ─── Steps ───────────────────────────────────────────────────────────────────
@@ -150,11 +158,158 @@ EOF
     docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
     smartmontools intel-gpu-tools vainfo \
     msmtp msmtp-mta \
+    unattended-upgrades fail2ban \
     ufw curl git htop
   ok "packages installed"
 
   run systemctl enable --now docker
   ok "docker enabled at boot (required for unattended recovery, spec §9.1)"
+}
+
+secure_env_file() {
+  step "Secrets"
+
+  local envfile="${SCRIPT_DIR}/.env"
+  if [[ ! -f "$envfile" ]]; then
+    warn ".env not found — copy .env.example to .env before starting the stack"
+    return 0
+  fi
+
+  # .env holds every password in the stack plus the Usenet provider account.
+  # `cp .env.example .env` inherits the umask, which is usually 0644, and this
+  # script sources it as root — so a writable .env is arbitrary root execution.
+  local mode
+  mode=$(stat -c '%a' "$envfile")
+  if [[ "$mode" != "600" ]]; then
+    run chmod 600 "$envfile"
+    ok ".env tightened from $mode to 0600"
+  else
+    ok ".env is already 0600"
+  fi
+}
+
+configure_unattended_upgrades() {
+  step "Unattended security updates"
+
+  # Required by spec §2 and never implemented until now. Security updates only:
+  # this box is expected to boot and run untouched for months, and an unattended
+  # full-release upgrade is how that turns into an unattended outage.
+  write_file /etc/apt/apt.conf.d/20auto-upgrades 0644 <<'EOF'
+// Managed by setup.sh — spec §2.
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+EOF
+
+  # Deliberately does NOT auto-reboot. A reboot mid-transcode or mid-import is
+  # worse than a delayed kernel patch on a LAN-only box; reboots stay manual.
+  write_file /etc/apt/apt.conf.d/52unattended-upgrades-local 0644 <<'EOF'
+// Managed by setup.sh. Security updates only — see spec §2.
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Debian,codename=${distro_codename},label=Debian-Security";
+        "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+};
+Unattended-Upgrade::Automatic-Reboot "false";
+EOF
+
+  run systemctl enable --now unattended-upgrades
+  ok "security updates applied automatically; reboots stay manual"
+}
+
+harden_ssh() {
+  step "SSH"
+
+  local cfg=/etc/ssh/sshd_config.d/10-hardening.conf
+  run mkdir -p /etc/ssh/sshd_config.d
+
+  # Disabling password authentication locks out anyone without a key, so it is
+  # only safe once a key is actually installed. Checking for authorized_keys is
+  # the difference between hardening the box and locking yourself out of it —
+  # and this may be a headless machine in another room.
+  local has_key=false
+  local f
+  for f in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do
+    [[ -s "$f" ]] && has_key=true && break
+  done
+
+  if $has_key; then
+    write_file "$cfg" 0644 <<'EOF'
+# Managed by setup.sh — spec §5.3.
+# Password auth is off because an authorized_keys file was found at setup time.
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+EOF
+    ok "root login and password authentication disabled (key found)"
+  else
+    write_file "$cfg" 0644 <<'EOF'
+# Managed by setup.sh — spec §5.3.
+# PasswordAuthentication is deliberately NOT disabled: no authorized_keys file
+# existed when this ran, and turning it off would have locked this box out.
+# Install a key, then re-run setup.sh to complete the hardening.
+PermitRootLogin no
+EOF
+    warn "no authorized_keys found — password authentication left ENABLED"
+    warn "  install a key:  ssh-copy-id <user>@<host>"
+    warn "  then re-run this script to disable password login"
+  fi
+
+  # sshd refuses to start on a bad config, which on a remote box means no way
+  # back in. Validate before reloading.
+  if run sshd -t; then
+    run systemctl reload ssh
+    ok "sshd configuration reloaded"
+  else
+    warn "sshd -t rejected the configuration; not reloading"
+  fi
+
+  # fail2ban's Debian default already watches sshd; enabling the service is all
+  # that is needed. It matters most on the LAN-facing side, since the tailnet
+  # side is authenticated by Tailscale before a packet reaches sshd.
+  run systemctl enable --now fail2ban
+  ok "fail2ban enabled (default sshd jail)"
+}
+
+install_backup_timer() {
+  step "Config backups"
+
+  # ${CONFIG_ROOT} holds every app database — watch history, requests, quality
+  # profiles, indexer setup. The media is re-acquirable; this is not. It also
+  # lives on the same SSD as the OS, so it needs a copy on the media disk.
+  # decisions.md D7 says to back this up before pulling images and, until now,
+  # nothing implemented that.
+  write_file /etc/systemd/system/mediaserver-backup.service 0644 <<EOF
+[Unit]
+Description=Back up mediaserver app configuration
+# The backup target is on the media disk. Without this the unit would run
+# before the mount and quietly fill the SSD instead.
+RequiresMountsFor=${MOUNT_POINT}
+
+[Service]
+Type=oneshot
+WorkingDirectory=${SCRIPT_DIR}
+ExecStart=${SCRIPT_DIR}/scripts/backup-config.sh
+EOF
+
+  write_file /etc/systemd/system/mediaserver-backup.timer 0644 <<'EOF'
+[Unit]
+Description=Daily mediaserver config backup
+
+[Timer]
+# 04:00, after smartd's long test window and well clear of overnight imports.
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  run systemctl daemon-reload
+  run systemctl enable --now mediaserver-backup.timer
+  ok "daily config backup at 04:00 -> ${MOUNT_POINT}/backups"
+  info "run one now with:  systemctl start mediaserver-backup.service"
 }
 
 create_media_user() {
@@ -390,7 +545,18 @@ configure_firewall() {
 
   run ufw --force default deny incoming
   run ufw --force default allow outgoing
-  run ufw allow OpenSSH
+
+  # Scoped rather than `ufw allow OpenSSH`, which is unsourced and accepts SSH
+  # from anywhere the host can be reached. The tailnet rule below already covers
+  # remote administration, so SSH only needs to reach the LAN.
+  if [[ -n "${LAN_SUBNET:-}" ]]; then
+    run ufw allow from "$LAN_SUBNET" to any port 22 proto tcp
+    ok "SSH allowed from ${LAN_SUBNET} only"
+  else
+    run ufw allow OpenSSH
+    warn "LAN_SUBNET unset — SSH allowed from any source as a fallback."
+    warn "  Set LAN_SUBNET in .env and re-run to scope it to the LAN."
+  fi
 
   if ip link show tailscale0 >/dev/null 2>&1; then
     run ufw allow in on tailscale0
@@ -416,8 +582,77 @@ configure_firewall() {
     warn "Set LAN_SUBNET (e.g. 192.168.1.0/24) in .env and re-run to allow it."
   fi
 
+  configure_docker_firewall
+
   run ufw --force enable
   ok "ufw enabled"
+}
+
+configure_docker_firewall() {
+  # UFW does not filter Docker-published ports, and this is the single most
+  # misleading thing about the stack's security posture.
+  #
+  # `ufw default deny incoming` filters the INPUT chain. Traffic to a published
+  # container port is DNAT'd in nat/PREROUTING and then traverses FORWARD, so it
+  # never reaches INPUT and UFW never sees it. Every service port published by
+  # docker-compose.yml is therefore reachable from any network the box is
+  # attached to, while `ufw status` reports a default-deny firewall.
+  #
+  # Docker leaves the DOCKER-USER chain empty and evaluates it before its own
+  # rules, precisely so this can be fixed. These rules put container traffic
+  # under the same policy the rest of the box already has: the tailnet and the
+  # LAN in, everything else out.
+  #
+  # Without this, the real boundary is only "no port forwarding on the router" —
+  # one accidental rule, or one move to an untrusted network, and the *arr UIs
+  # and qBittorrent are on the internet. See decisions.md D19.
+  local rules=/etc/ufw/after.rules
+  local marker="# BEGIN MEDIASERVER DOCKER-USER"
+
+  [[ -f "$rules" ]] || { warn "$rules not found — is ufw installed?"; return 0; }
+
+  if grep -qF "$marker" "$rules"; then
+    ok "DOCKER-USER rules already present in $rules"
+    return 0
+  fi
+
+  if [[ -z "${LAN_SUBNET:-}" ]]; then
+    warn "LAN_SUBNET unset — skipping DOCKER-USER rules."
+    warn "  Adding them without a LAN subnet would cut the LAN off from Jellyfin"
+    warn "  and break Infuse on the Apple TV. Set LAN_SUBNET and re-run."
+    return 0
+  fi
+
+  if $DRY_RUN; then
+    printf '  \033[36m[dry-run]\033[0m append DOCKER-USER block to %s (LAN %s)\n' \
+      "$rules" "$LAN_SUBNET"
+    return 0
+  fi
+
+  cp "$rules" "${rules}.bak"
+  ok "backed up $rules to ${rules}.bak"
+
+  cat >> "$rules" <<EOF
+
+${marker}
+# Managed by setup.sh. Docker-published ports bypass UFW's INPUT chain, so
+# these rules apply the same policy to forwarded container traffic.
+# Order matters: RETURN hands the packet back to Docker's own chains.
+*filter
+:DOCKER-USER - [0:0]
+-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A DOCKER-USER -i tailscale0 -j RETURN
+-A DOCKER-USER -i lo -j RETURN
+-A DOCKER-USER -s ${LAN_SUBNET} -j RETURN
+# Anything else reaching a container from off-box is dropped. This is what
+# makes the absence of a router port forward a second line of defence rather
+# than the only one.
+-A DOCKER-USER -j DROP
+COMMIT
+# END MEDIASERVER DOCKER-USER
+EOF
+  ok "DOCKER-USER rules appended (tailnet + ${LAN_SUBNET} in, rest dropped)"
+  info "verify after reload:  iptables -L DOCKER-USER -n -v"
 }
 
 report() {
@@ -444,11 +679,15 @@ report() {
 
 preflight "$@"
 install_packages
+secure_env_file
 create_media_user
 format_disk
 configure_fstab
 create_tree
 configure_mail
 configure_smartd
+configure_unattended_upgrades
+harden_ssh
+install_backup_timer
 configure_firewall
 report

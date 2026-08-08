@@ -63,11 +63,21 @@ requiring explicit justification.
    public DNS record. Caddy — the remote-access path — binds only to the
    tailnet IP (`CADDY_BIND_ADDR`). Service ports do publish on the LAN via
    `BIND_ADDR`, which is intended: spec §5.1 wants direct LAN access and Infuse
-   reaches Jellyfin that way. The boundary is the router plus UFW, not the bind
-   address (decisions.md D1). qBittorrent's "run external program on completion"
-   is arbitrary command execution by design; the *arr apps authenticate with a
-   key printed in their own UI. Neither tolerates hostile exposure.
-5. **Gluetun stays commented out** until a VPN provider with working port
+   reaches Jellyfin that way. The boundary is the router, plus the `DOCKER-USER`
+   rules `setup.sh` installs — **not** plain UFW, which does not filter
+   Docker-published ports at all (decisions.md D1, D19). qBittorrent's "run
+   external program on completion" and SABnzbd's post-processing scripts are
+   both arbitrary command execution by design. Neither tolerates hostile
+   exposure.
+
+5. **Every app enforces authentication, and it is asserted, not assumed.** The
+   *arr auth method and scope are pinned as environment variables so they are
+   re-applied on every container start; credentials come from `provision.sh`.
+   `scripts/audit-auth.sh` checks all eight apps against the running stack.
+   Never set `AuthenticationRequired` to `DisabledForLocalAddresses`: Caddy
+   reaches the backends over the compose bridge, so that exemption applies to
+   every proxied request and leaves the admin UIs open (decisions.md D18).
+6. **Gluetun stays commented out** until a VPN provider with working port
    forwarding is chosen (§7). Do not uncomment it speculatively.
 
 ## Repo layout
@@ -91,6 +101,8 @@ config/
 scripts/
   provision.sh            wire the stack over the apps' REST APIs (idempotent)
   validate.sh             static checks; run before every commit
+  audit-auth.sh           runtime checks; asserts every app enforces auth
+  backup-config.sh        back up ${CONFIG_ROOT} to the media disk, with retention
   init-tree.sh            create the §3.1 /data tree in a running stack
   test-hardlinks.sh       prove the hardlink invariant
 docs/
@@ -98,6 +110,7 @@ docs/
   decisions.md            implementation decisions + open questions
   dev-testing.md          what can and cannot be validated on macOS
   verification.md         the acceptance checklist, run on the target
+  review-2026-08.md       security and architecture review + what it changed
 ```
 
 ## Conventions
@@ -146,15 +159,23 @@ One command, works on macOS and Debian, needs nothing running:
 ./scripts/validate.sh
 ```
 
-It parses the compose config, asserts mechanically that exactly the five media
+It parses the compose config, asserts mechanically that exactly the six media
 services mount `/data` and that they all resolve to **one** source (invariant 1
 and 2, which no runtime error would catch), confirms Gluetun is still commented
-out, validates both Caddyfiles, and shellchecks every script. Run it before
-every commit.
+out, checks the exposure invariants (every published port names an interface,
+Caddy is not on a wildcard, the *arr auth env vars are present, `.env` is 0600),
+validates both Caddyfiles, and shellchecks every script. Run it before every
+commit.
 
-With the stack up, `./scripts/test-hardlinks.sh` proves invariant 2 for real —
-it writes a file as qBittorrent and links it as Sonarr, then compares device,
-inode, and link count.
+With the stack up, two more:
+
+```bash
+./scripts/audit-auth.sh        # invariant 5 — every app enforces auth
+./scripts/test-hardlinks.sh    # invariant 2 — one inode, two names
+```
+
+`test-hardlinks.sh` writes a file as qBittorrent and links it as Sonarr, then
+compares device, inode and link count.
 
 `setup.sh` cannot run here, but its logic can be exercised in a container:
 
@@ -163,17 +184,36 @@ docker run --rm -v "$PWD:/repo:ro" debian:trixie \
   bash -c 'cd /repo && bash setup.sh --dry-run --skip-packages --disk /dev/sdX'
 ```
 
+Note that `--dry-run` skips the steps that append to files (`DOCKER-USER` rules),
+so it does not exercise everything. To reach those, install `ufw` and
+`openssh-server` in the container, stub `systemctl`, set `LAN_SUBNET`, and run
+without `--dry-run` — and run it **twice**, since idempotency is the property
+most likely to be wrong.
+
 `shellcheck` and `yamllint` are not installed natively; `validate.sh` uses the
 container forms.
 
 ## Current state
 
 All spec §9 deliverables are implemented. Verified on the Mac: both compose
-layerings render correctly, all eight containers start, every web UI responds
-directly and through Caddy, and the hardlink test passes on the named volume.
+layerings render correctly, all ten containers start and reach healthy, every
+web UI responds directly and through Caddy, the hardlink test passes on the
+named volume, and `audit-auth.sh` passes on all eight apps.
+
+A security and architecture review in August 2026 is written up in
+[`docs/review-2026-08.md`](docs/review-2026-08.md), with what it changed and what
+was accepted rather than fixed. Two findings are worth carrying in your head
+because they invalidate reasonable-sounding assumptions:
+
+- **UFW does not filter Docker-published ports.** Anything reasoning about "UFW
+  denies inbound" is wrong unless the `DOCKER-USER` rules are in place (D19).
+- **`config.xml` is not the *arrs' source of truth.** Environment configuration
+  is applied at runtime without being written to disk, so the file disagrees
+  with the running app. Ask the API (D18).
 
 Untested until the Debian box exists — do not report these as working: hardware
-transcoding, `*.ts.net` certificates, tailnet-only binding, UFW, smartd
-delivery, and unattended boot. They are tracked in
+transcoding, `*.ts.net` certificates, tailnet-only binding, the UFW and
+`DOCKER-USER` rules, fail2ban, unattended-upgrades, smartd delivery, and
+unattended boot. They are tracked in
 [`docs/verification.md`](docs/verification.md); open questions are in
 [`docs/decisions.md`](docs/decisions.md).

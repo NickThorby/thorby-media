@@ -74,6 +74,7 @@ services:
       - ./caddy/site:/srv/site:ro
       - caddy_data:/caddydata
       - caddy_config:/config
+      - caddy_logs:/var/log/caddy
 
 volumes:
   # The media root. Shared by every media-touching service — one volume is
@@ -90,3 +91,4 @@ volumes:
   recyclarr_config:
   caddy_data:
   caddy_config:
+  caddy_logs:

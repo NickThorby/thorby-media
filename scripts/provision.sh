@@ -51,7 +51,7 @@ if [[ "${1:-}" == "--init-keys" ]]; then
       added=1
     fi
   done
-  for var in QBIT_PASS SAB_PASS BAZARR_PASS; do
+  for var in QBIT_PASS SAB_PASS BAZARR_PASS ARR_PASS; do
     if grep -qE "^${var}=.+" .env; then
       skip "$var already set"
     else
@@ -60,6 +60,15 @@ if [[ "${1:-}" == "--init-keys" ]]; then
       added=1
     fi
   done
+
+  # .env now holds every password in the stack plus the Usenet provider account.
+  # It is created by `cp .env.example .env`, which inherits the umask — usually
+  # 0644. Nothing else in the deploy narrows it.
+  if [[ "$(stat -f '%Lp' .env 2>/dev/null || stat -c '%a' .env)" != "600" ]]; then
+    chmod 600 .env
+    ok "tightened .env to 0600"
+  fi
+
   echo
   if [[ $added -eq 1 ]]; then
     echo "  Keys were appended to .env. The *arrs read them at startup, so:"
@@ -74,11 +83,21 @@ set -a
 source ./.env
 set +a
 
-for var in SONARR_API_KEY RADARR_API_KEY PROWLARR_API_KEY QBIT_PASS; do
+for var in SONARR_API_KEY RADARR_API_KEY PROWLARR_API_KEY QBIT_PASS ARR_PASS; do
   [[ -n "${!var:-}" ]] || die "$var is not set in .env. Run: ./scripts/provision.sh --init-keys"
 done
 
 QBIT_USER=${QBIT_USER:-admin}
+ARR_USER=${ARR_USER:-admin}
+
+# The *arrs reach the download clients across the compose bridge by container
+# name, not via a published port. These are variables rather than literals for
+# one reason: when the VPN lands (spec §7), qBittorrent moves to
+# `network_mode: service:gluetun` and stops having a network identity of its
+# own — the *arrs must then reach it at `gluetun`. Set QBIT_HOST=gluetun that
+# day. Hardcoding it is a silent breakage waiting to happen.
+QBIT_HOST=${QBIT_HOST:-qbittorrent}
+SAB_HOST=${SAB_HOST:-sabnzbd}
 SONARR_URL="http://127.0.0.1:${SONARR_PORT:-8989}"
 RADARR_URL="http://127.0.0.1:${RADARR_PORT:-7878}"
 PROWLARR_URL="http://127.0.0.1:${PROWLARR_PORT:-9696}"
@@ -525,20 +544,55 @@ upsert_download_client() {
   ok "$app: $name -> $desc"
 }
 
-# host is the container name, not localhost: the *arrs reach the download
-# clients across the compose bridge network, not via a published port.
 qbit_fields() {
-  jq -n --arg user "$QBIT_USER" --arg pass "$QBIT_PASS" --arg cf "$1" --arg cat "$2" \
-    '[{name:"host",value:"qbittorrent"},{name:"port",value:8080},
+  jq -n --arg host "$QBIT_HOST" --arg user "$QBIT_USER" --arg pass "$QBIT_PASS" \
+        --arg cf "$1" --arg cat "$2" \
+    '[{name:"host",value:$host},{name:"port",value:8080},
       {name:"useSsl",value:false},{name:"username",value:$user},
       {name:"password",value:$pass},{name:$cf,value:$cat}]'
 }
 
 sab_fields() {
-  jq -n --arg key "$SAB_API_KEY" --arg cf "$1" --arg cat "$2" \
-    '[{name:"host",value:"sabnzbd"},{name:"port",value:8080},
+  jq -n --arg host "$SAB_HOST" --arg key "$SAB_API_KEY" --arg cf "$1" --arg cat "$2" \
+    '[{name:"host",value:$host},{name:"port",value:8080},
       {name:"useSsl",value:false},{name:"apiKey",value:$key},
       {name:$cf,value:$cat}]'
+}
+
+# ─── *arr login ──────────────────────────────────────────────────────────────
+
+# ensure_arr_auth <app> <url> <key> <api-version>
+#
+# Only the credentials are set here. The method and whether auth is required at
+# all come from SONARR__AUTH__METHOD / __REQUIRED in docker-compose.yml, because
+# environment config is re-applied on every container start — an accidental UI
+# flip to DisabledForLocalAddresses reverts on the next restart instead of
+# quietly persisting. Credentials cannot be pinned the same way: the *arrs keep
+# them in their database, not config.xml, so they have to come over the API.
+#
+# This runs before anyone has logged in, which only works because the API key is
+# pinned ahead of first start (decisions.md D12). That is what closes the window
+# where a fresh box serves an open account-creation screen on the LAN.
+#
+# Idempotent. To rotate the password, change ARR_PASS in .env and re-run with
+# ARR_AUTH_FORCE=1 — otherwise an already-configured login is left alone so a
+# routine provision run does not log you out of every UI.
+ensure_arr_auth() {
+  local app=$1 url=$2 key=$3 ver=$4 current updated
+  current=$(arr GET "$url" "$key" "/api/$ver/config/host")
+
+  if [[ "${ARR_AUTH_FORCE:-0}" != "1" ]] \
+     && [[ $(jq -r '.username' <<<"$current") == "$ARR_USER" ]] \
+     && [[ -n $(jq -r '.password // ""' <<<"$current") ]]; then
+    skip "$app login already set for '$ARR_USER'"
+    return
+  fi
+
+  # passwordConfirmation must match or the PUT fails schema validation.
+  updated=$(jq --arg u "$ARR_USER" --arg p "$ARR_PASS" \
+    '.username = $u | .password = $p | .passwordConfirmation = $p' <<<"$current")
+  arr PUT "$url" "$key" "/api/$ver/config/host" "$updated" >/dev/null
+  ok "$app login set for '$ARR_USER'"
 }
 
 # ─── Hardlinks ───────────────────────────────────────────────────────────────
@@ -592,6 +646,13 @@ wait_for Sonarr   "$SONARR_URL/api/v3/system/status"   "$SONARR_API_KEY";   ok "
 wait_for Radarr   "$RADARR_URL/api/v3/system/status"   "$RADARR_API_KEY";   ok "Radarr ready"
 wait_for Prowlarr "$PROWLARR_URL/api/v1/system/status" "$PROWLARR_API_KEY"; ok "Prowlarr ready"
 
+# Close the *arr UIs first. Everything below this point is configuration; this
+# is the step that stops a fresh box serving an open account-creation screen.
+step "Logins"
+ensure_arr_auth Sonarr   "$SONARR_URL"   "$SONARR_API_KEY"   v3
+ensure_arr_auth Radarr   "$RADARR_URL"   "$RADARR_API_KEY"   v3
+ensure_arr_auth Prowlarr "$PROWLARR_URL" "$PROWLARR_API_KEY" v1
+
 provision_qbittorrent
 provision_sabnzbd
 provision_bazarr
@@ -631,13 +692,27 @@ for pair in "NZBgeek:${NZBGEEK_API_KEY:-}" "NzbPlanet:${NZBPLANET_API_KEY:-}"; d
 done
 
 # Public torrent indexers need no account, so they ship enabled by default.
-# These are what make anime work — Usenet covers it poorly, so without them
-# Sonarr finds almost nothing for an anime series.
+#
+# Nyaa.si, SubsPlease and AnimeTosho are what make anime work — Usenet covers it
+# poorly, so without them Sonarr finds almost nothing for an anime series.
+# The Pirate Bay and YTS are the general-purpose half: without them the torrent
+# side covers only anime, and everything else depends on the Usenet provider and
+# indexer subscriptions both staying live. They are the fallback for a lapsed
+# subscription and for titles that have aged out of Usenet retention. YTS is
+# films only and its releases are small encodes that the SQP profile ranks low,
+# which is the correct behaviour for a last resort.
+#
+# 1337x is deliberately absent despite being the best general-purpose public
+# tracker: it sits behind CloudFlare and Prowlarr rejects it on save with
+# "blocked by CloudFlare Protection". Reaching it needs a FlareSolverr container
+# and a matching Prowlarr proxy — see .env.example.
+#
+# Tokyo Toshokan was dropped: it indexes largely the same sources as Nyaa.
 #
 # Note AnimeTosho, not "Anime Tosho": Prowlarr carries both, and despite being
 # labelled private the former needs no credentials and works, while the
 # semiprivate one fails to connect.
-IFS=',' read -r -a _indexers <<<"${TORRENT_INDEXERS:-Nyaa.si,SubsPlease,AnimeTosho,Tokyo Toshokan}"
+IFS=',' read -r -a _indexers <<<"${TORRENT_INDEXERS:-Nyaa.si,SubsPlease,AnimeTosho,The Pirate Bay,YTS}"
 for definition in "${_indexers[@]}"; do
   definition="${definition#"${definition%%[![:space:]]*}"}"   # trim leading space
   definition="${definition%"${definition##*[![:space:]]}"}"   # trim trailing space

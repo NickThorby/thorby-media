@@ -234,6 +234,117 @@ One file therefore works at both `<host>.ts.net` and `localhost:8443`, port
 included. A server-side template on `{$CADDY_DOMAIN}` would lose the dev port,
 since that variable carries no port.
 
+### D18. *arr authentication is pinned in the environment, credentials by API
+
+The three *arrs previously relied on their first-run wizard, which meant a fresh
+box served an account-creation screen on the LAN until a human got to it, and
+nothing re-asserted the setting afterwards.
+
+`AuthenticationMethod` and `AuthenticationRequired` are config-file elements, so
+they map onto the same `SONARR__AUTH__*` mechanism already used for the API key:
+`ARR_AUTH_METHOD` and `ARR_AUTH_REQUIRED` in `docker-compose.yml`. Environment
+config is re-applied on **every container start**, which is the property that
+matters — a UI flip to `DisabledForLocalAddresses` reverts on the next restart
+instead of persisting silently.
+
+Credentials cannot be pinned the same way; the *arrs keep them in their database
+rather than `config.xml`. `provision.sh` sets them over
+`PUT /api/vN/config/host`, which works before anyone has logged in only because
+the API key is pinned ahead of first start (D12). That is the payoff D12 was
+buying and had not been used for until now.
+
+Verified on a fresh container with the env vars pinned and no credentials set:
+`GET /` redirects to `/login`, empty credentials are rejected, `/loginsetup` is
+unreachable, and `PUT /api/v3/config/host` returns 202 and the credentials take.
+Also verified in the failure direction: with `DisabledForLocalAddresses`, `GET /`
+returns 200 with no login. Note that the setting is applied at runtime and is
+*not* written to `config.xml`, so `config.xml` disagrees with the running app —
+`scripts/audit-auth.sh` reads the API, never the file.
+
+### D19. UFW does not filter the container ports, so setup.sh writes DOCKER-USER rules
+
+The stated boundary was "no router port forwarding, plus UFW denying inbound"
+(D1, spec §5.3). The second half was not true. Docker publishes ports by DNAT in
+`nat/PREROUTING`; the traffic then traverses `FORWARD`, never `INPUT`, which is
+the chain UFW filters. Every service in this stack was therefore reachable from
+any attached network while `ufw status` reported a default-deny firewall.
+
+`setup.sh` now appends a guarded block to `/etc/ufw/after.rules` populating the
+`DOCKER-USER` chain — which Docker leaves empty and evaluates first, precisely
+for this — returning established traffic, loopback, `tailscale0` and
+`$LAN_SUBNET`, and dropping everything else.
+
+It is skipped with a warning when `LAN_SUBNET` is unset, because applying it
+without one would cut the LAN off from Jellyfin and break Infuse on the Apple
+TV, which is the primary playback path (D10).
+
+This does not change the threat model, it makes the existing one true. The
+absence of a port forward becomes the second line of defence rather than the
+only one.
+
+### D20. BIND_ADDR is required, not defaulted
+
+It was `${BIND_ADDR:-0.0.0.0}`, which fails open: deleting the variable from
+`.env` published the whole stack on every interface. It is now `${BIND_ADDR:?}`,
+matching `CADDY_BIND_ADDR`, so the decision has to be made explicitly. The
+recommended first-boot value is `127.0.0.1` until the Jellyfin and Jellyseerr
+wizards are done — those two are the only first-run surfaces left that cannot be
+closed from configuration.
+
+### D21. Caddy keeps the tailscaled socket, for now
+
+`/var/run/tailscale/tailscaled.sock` is mounted into Caddy so it can fetch
+`*.ts.net` certificates (Q2). That socket is the tailnet control API, not a
+cert-issuing endpoint, and Caddy in `caddy:alpine` runs as root — so a Caddy
+compromise reaches the tailnet, not just the proxy. `:ro` on a socket restricts
+nothing.
+
+Accepted rather than fixed, because both alternatives need a real tailnet to
+validate and there isn't one yet:
+
+1. Run Caddy as a non-root user and set `TS_PERMIT_CERT_UID` on tailscaled.
+2. Issue with `tailscale cert` on the host, mount the cert and key read-only,
+   and add an explicit `tls` directive — no socket in the container at all.
+
+Revisit when Q1 and Q2 are closed. Option 2 is the smaller blast radius.
+
+### D22. Config backups exist, and go on the media disk
+
+`${CONFIG_ROOT}` holds every app database — watch history, requests, quality
+profiles, indexer setup, user accounts. The media on `/mnt/disk1` is
+re-acquirable; that state is not, and it sat on the same SSD as the OS with no
+copy anywhere. D7 already said to back it up before pulling images and nothing
+implemented it, which combined badly with `:latest` tags.
+
+`scripts/backup-config.sh` triggers each *arr's own backup command first — they
+checkpoint SQLite properly, and copying a database mid-write yields a file that
+restores cleanly and is subtly corrupt — then tars `${CONFIG_ROOT}` to
+`/mnt/disk1/backups` with retention. `setup.sh` installs a daily systemd timer
+with `RequiresMountsFor`, so a missing mount stops the unit rather than quietly
+filling the SSD with what is meant to be the off-SSD copy.
+
+One disk is not an offsite backup. This protects against the SSD dying and
+against a bad image pull, which are the two failures that actually happen.
+
+### D23. Public torrent indexers cover more than anime
+
+The defaults were `Nyaa.si, SubsPlease, AnimeTosho, Tokyo Toshokan` — all four
+anime. That left every TV and film torrent search with no indexer at all, so the
+entire non-anime library depended on the Eweka and NZBgeek subscriptions both
+staying live, with no fallback for a lapsed subscription or for titles aged out
+of Usenet retention.
+
+Added `The Pirate Bay` and `YTS`. Dropped `Tokyo Toshokan`, which indexes
+substantially the same sources as Nyaa.
+
+`1337x` is the best general-purpose public tracker and is deliberately not in
+the default set: it is behind CloudFlare, and Prowlarr rejects it on save with
+"blocked by CloudFlare Protection". Verified — it fails at provisioning time,
+which is the indexer validation working as intended rather than a silent
+no-results indexer later. Using it needs a FlareSolverr container and a matching
+Prowlarr indexer proxy, i.e. an always-on headless Chrome, so it is opt-in and
+documented in `.env.example` rather than shipped.
+
 ---
 
 ## Open

@@ -18,4 +18,22 @@
 	local_certs
 }
 
+# Same snippet as production minus HSTS — see the note in Caddyfile. Sending it
+# here would pin every *.localhost host to HTTPS in the browser for a year,
+# which outlives this stack and breaks unrelated local work.
+(common) {
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format json
+	}
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}
+
 import sites.caddy

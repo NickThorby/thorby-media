@@ -82,6 +82,57 @@ else
 fi
 
 echo
+echo "Exposure"
+
+# Every published port must name an interface. A bare "8096:8096" publishes on
+# 0.0.0.0 no matter what BIND_ADDR says, which is the one way to leak a service
+# past the intended boundary without any file looking wrong.
+unbound=$(jq -r '[.services | to_entries[] as $s
+                  | ($s.value.ports // [])[]
+                  | select((.host_ip // "") == "")
+                  | "\($s.key):\(.published)"] | join(", ")' <<<"$rendered")
+if [[ -z "$unbound" ]]; then
+  ok "every published port names an interface"
+else
+  bad "published ports with no bind address (these land on 0.0.0.0)"
+  printf '      %s\n' "$unbound"
+fi
+
+# Caddy is the remote-access path and the only service that should ever be
+# reachable from off-LAN. Publishing it on 0.0.0.0 puts the admin UIs one
+# router rule away from the internet.
+caddy_ips=$(jq -r '[.services.caddy.ports // [] | .[] | .host_ip // ""] | unique | join(", ")' <<<"$rendered")
+if [[ "$caddy_ips" == *"0.0.0.0"* || "$caddy_ips" == *"::"* ]]; then
+  bad "caddy publishes on $caddy_ips — it must bind to the tailnet IP only"
+  printf '      %s\n' "On the target: CADDY_BIND_ADDR=\$(tailscale ip -4)"
+else
+  ok "caddy binds to $caddy_ips, not a wildcard"
+fi
+
+# The *arr auth settings are the difference between a login prompt and an
+# anonymous admin session, and deleting them looks like tidying up. Verified:
+# with AUTH__REQUIRED unset to DisabledForLocalAddresses, GET / returns 200.
+for svc in sonarr radarr prowlarr; do
+  prefix=$(tr '[:lower:]' '[:upper:]' <<<"$svc")
+  if jq -e --arg m "${prefix}__AUTH__METHOD" --arg r "${prefix}__AUTH__REQUIRED" --arg s "$svc" \
+       '.services[$s].environment | has($m) and has($r)' <<<"$rendered" >/dev/null; then
+    ok "$svc pins its authentication method and scope"
+  else
+    bad "$svc is missing ${prefix}__AUTH__METHOD / __REQUIRED"
+    printf '      %s\n' "Without these the app falls back to its first-run wizard."
+  fi
+done
+
+# .env holds every password in the stack plus the Usenet provider account.
+env_mode=$(stat -f '%Lp' .env 2>/dev/null || stat -c '%a' .env)
+if [[ "$env_mode" == "600" ]]; then
+  ok ".env is mode 0600"
+else
+  bad ".env is mode $env_mode — it holds every password in the stack"
+  printf '      %s\n' "chmod 600 .env"
+fi
+
+echo
 echo "Caddy"
 
 for cf in Caddyfile Caddyfile.dev; do

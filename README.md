@@ -87,6 +87,7 @@ smartd, sets UFW rules, and prints the values you need for the next step.
 | Variable | Where it comes from |
 |---|---|
 | `RENDER_GID` | `getent group render` |
+| `BIND_ADDR` | `127.0.0.1` for now — widened in step 7, once the wizards are done |
 | `CADDY_BIND_ADDR` | `tailscale ip -4` |
 | `CADDY_DOMAIN` | the machine's fully qualified `<host>.ts.net` |
 | `LAN_SUBNET` | your home network, e.g. `192.168.1.0/24` |
@@ -94,10 +95,17 @@ smartd, sets UFW rules, and prints the values you need for the next step.
 | `USENET_USER`, `USENET_PASS` | your news server (Eweka etc). Blank = no Usenet downloads |
 | `NZBGEEK_API_KEY`, `NZBPLANET_API_KEY` | Usenet indexer keys, from each site's profile page |
 
-`LAN_SUBNET` matters more than it looks: leave it blank and UFW blocks LAN
-clients from reaching Jellyfin, so Infuse on the Apple TV will not find it
-unless the Apple TV is on the tailnet. Re-run `sudo ./setup.sh --skip-packages`
-after editing to apply the firewall change.
+`BIND_ADDR` has no default and the stack will not start without it. That is
+deliberate: a default of `0.0.0.0` fails open, so deleting the line would
+silently publish everything on every interface.
+
+`LAN_SUBNET` matters more than it looks, in two directions. Leave it blank and
+the firewall blocks LAN clients from reaching Jellyfin, so Infuse on the Apple TV
+will not find it unless the Apple TV is on the tailnet. But leave it blank and
+`setup.sh` also **skips the `DOCKER-USER` rules entirely** — and those are what
+actually keep the service ports off the internet, because plain UFW does not
+filter Docker-published ports. Re-run `sudo ./setup.sh --skip-packages` after
+editing to apply the firewall change.
 
 **4. Verify the iGPU** before starting anything:
 
@@ -108,25 +116,59 @@ vainfo | grep -Ei 'h264|hevc'
 Both H.264 and HEVC must show decode and encode entrypoints. If `/dev/dri` is
 missing entirely, integrated graphics is disabled in BIOS — revisit §1.1.
 
-**5. Generate API keys and start the stack.**
+**5. Generate API keys and start the stack — on loopback first.**
+
+Set `BIND_ADDR=127.0.0.1` in `.env` before this step. Jellyfin and Jellyseerr
+both serve an open first-run wizard until someone completes it, and the first
+visitor to reach one becomes its administrator. On a LAN that includes every
+device on the network. Everything else in the stack now comes up already closed:
+the *arr auth settings are pinned in `docker-compose.yml`, and `provision.sh`
+sets the credentials for the *arrs, qBittorrent, SABnzbd and Bazarr.
 
 ```bash
-./scripts/provision.sh --init-keys    # writes keys into .env
+./scripts/provision.sh --init-keys    # writes keys into .env, chmods it 0600
 docker compose up -d
+docker compose exec recyclarr recyclarr sync   # creates the quality profiles
 ./scripts/provision.sh                # wires everything together
+```
+
+The Recyclarr sync is not optional and has to come first: `provision.sh` links
+Jellyseerr to Radarr and Sonarr by quality-profile *name*, and those profiles do
+not exist until Recyclarr has run. Recyclarr's own schedule is `@daily`, so
+without this the first provision run skips the Jellyseerr step.
+
+**6. Finish the two wizards that cannot be automated,** over an SSH tunnel so
+they are never exposed:
+
+```bash
+ssh -L 8096:localhost:8096 -L 5055:localhost:5055 <user>@<host>
+```
+
+Jellyfin first (create the admin account and the three libraries), then
+Jellyseerr — see steps 8 and 9 of the configuration sequence below. Re-run
+`./scripts/provision.sh` afterwards to wire Jellyseerr up.
+
+**7. Check it, then open it to the LAN.**
+
+```bash
 ./scripts/validate.sh
+./scripts/audit-auth.sh
 ./scripts/test-hardlinks.sh
 ```
 
-`provision.sh` does steps 1–6 of the configuration sequence below over the apps'
-REST APIs: qBittorrent's password, save paths and categories; Sonarr's and
-Radarr's root folders, download client and hardlink setting; and registering
-both with Prowlarr so indexers sync automatically. It's idempotent — re-run it
-after any `.env` change.
+`audit-auth.sh` must pass before you widen `BIND_ADDR`. It asks each running app
+what it actually enforces, rather than trusting that a wizard was completed.
+
+Only then set `BIND_ADDR` to `0.0.0.0` (or the LAN IP) and
+`docker compose up -d`. Make sure `LAN_SUBNET` is set in `.env` and re-run
+`sudo ./setup.sh` — the firewall rules that keep those ports off the internet
+depend on it.
 
 The hardlink test is not optional. It writes a file as qBittorrent and links it
 as Sonarr, then compares device, inode and link count — the same thing step 6 of
-the configuration sequence asks you to check by hand, done automatically.
+the configuration sequence asks you to check by hand, done automatically. Run it
+a second time for the Usenet tree, as
+[`docs/verification.md`](docs/verification.md) shows.
 
 Then work through [`docs/verification.md`](docs/verification.md).
 
@@ -181,10 +223,19 @@ add indexers directly in Sonarr or Radarr; Prowlarr owns them.
 Settings → Apps, add Sonarr and Radarr with their API keys. From this point
 indexers sync automatically and are never configured in the *arr apps directly.
 
-### 4. Sonarr and Radarr → qBittorrent
+### 4. Sonarr and Radarr → download clients
 
-Add qBittorrent as a download client in each, with the category names from
-step 1 (`tv` and `anime` in Sonarr, `movies` in Radarr).
+Add **both** clients in each app, with the category names from step 1 (`tv` and
+`anime` in Sonarr, `movies` in Radarr):
+
+- **SABnzbd** at priority **1** — Usenet is preferred where both have a release
+- **qBittorrent** at priority **2**
+
+Priority is lowest-wins. They are not redundant: Usenet is faster, has better
+retention and carries no seeding obligation, but covers anime poorly, so in
+practice Usenet carries TV and film while torrents carry anime.
+
+`provision.sh` does all of this already; this section is what it is doing.
 
 ### 5. Root folders
 
@@ -321,9 +372,29 @@ alerting path that has never been tested is not an alerting path.
 
 - Nothing is forwarded from the router; the public IP listens on nothing
 - Remote access is Tailscale, only
-- The *arr UIs and qBittorrent are not built for hostile exposure and must never
-  reach the internet
-- Authentication is enabled in every app
+- The *arr UIs, qBittorrent and SABnzbd are not built for hostile exposure and
+  must never reach the internet. qBittorrent's external-program setting and
+  SABnzbd's post-processing scripts are both arbitrary command execution
+- Authentication is enforced in every app — and asserted, not assumed. Run
+  `./scripts/audit-auth.sh` after any change to a UI setting, and never set the
+  *arrs to "disabled for local addresses": Caddy reaches them over the compose
+  bridge, so that exemption covers every proxied request
+- **UFW alone does not protect the service ports.** Docker publishes bypass its
+  INPUT chain entirely. The `DOCKER-USER` rules `setup.sh` installs are what
+  actually enforce this, and they need `LAN_SUBNET` set in `.env`
+
+Back up before updating — `docker compose pull` on `:latest` tags can land a
+breaking major version:
+
+```bash
+./scripts/backup-config.sh
+docker compose pull && docker compose up -d
+```
+
+A daily backup timer is installed by `setup.sh`; `./scripts/backup-config.sh
+--list` shows what is there. Restore is tested in
+[`docs/verification.md`](docs/verification.md) item 10 — an untested backup is
+not a backup.
 
 ---
 
@@ -364,6 +435,8 @@ is not set to Anime.
 | `config/recyclarr/recyclarr.yml` | Quality profile templates, incl. anime |
 | `scripts/provision.sh` | Wire the stack together over the apps' APIs — idempotent |
 | `scripts/validate.sh` | Static checks — run before every commit |
+| `scripts/audit-auth.sh` | Runtime checks — assert every app enforces authentication |
+| `scripts/backup-config.sh` | Back up `${CONFIG_ROOT}` to the media disk, with retention |
 | `scripts/init-tree.sh` | Create the §3.1 `/data` tree in a running stack |
 | `scripts/test-hardlinks.sh` | Prove the hardlink invariant |
 | [`CLAUDE.md`](CLAUDE.md) | Working guidance for Claude Code |
@@ -371,3 +444,4 @@ is not set to Anime.
 | [`docs/decisions.md`](docs/decisions.md) | Implementation choices and open questions |
 | [`docs/dev-testing.md`](docs/dev-testing.md) | What is testable on the Mac, what is not |
 | [`docs/verification.md`](docs/verification.md) | Acceptance checklist, run on the server |
+| [`docs/review-2026-08.md`](docs/review-2026-08.md) | Security and architecture review, and what it changed |

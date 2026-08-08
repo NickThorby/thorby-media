@@ -15,6 +15,34 @@ x-env: &env
   PGID: ${PGID:-1000}
   TZ: ${TZ:-Africa/Johannesburg}
 
+# The OS, Docker and every app database live on one 500 GB SSD. Docker's default
+# json-file driver has no size limit, so a container that starts logging in a
+# loop fills that disk and takes the whole stack down with it.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# The LinuxServer images start as root to drop to PUID/PGID, so they cannot run
+# with a dropped capability set. no-new-privileges is compatible with that —
+# it blocks setuid escalation *after* the drop, which is the part that matters.
+x-security: &security
+  - no-new-privileges:true
+
+# BIND_ADDR is required rather than defaulted, and deliberately has no fallback.
+# A default of 0.0.0.0 fails *open*: delete the variable from .env and the whole
+# stack silently publishes on every interface. Requiring it forces the decision
+# to be made explicitly, the same way CADDY_BIND_ADDR already does.
+#
+#   127.0.0.1   loopback only — use this until every first-run wizard is done
+#   0.0.0.0     every interface, i.e. the LAN (spec §5.1, decisions.md D1)
+#   <lan-ip>    the LAN interface only
+#
+# Note that UFW does not filter these. Docker publishes bypass the INPUT chain,
+# so what actually keeps them off the internet is the absence of a router port
+# forward, plus the DOCKER-USER rules setup.sh installs. See decisions.md D19.
+
 services:
 
   # ── Media server ───────────────────────────────────────────────────────────
@@ -22,6 +50,14 @@ services:
     image: lscr.io/linuxserver/jellyfin:latest
     container_name: jellyfin
     restart: unless-stopped
+    logging: *logging
+    security_opt: *security
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8096/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
     environment:
       <<: *env
     # Quick Sync passthrough. RENDER_GID is required rather than defaulted: a
@@ -34,7 +70,7 @@ services:
       - ${CONFIG_ROOT:-/opt/mediaserver}/jellyfin:/config
       - ${DATA_ROOT:-/data}:/data
     ports:
-      - "${BIND_ADDR:-0.0.0.0}:${JELLYFIN_PORT:-8096}:8096"
+      - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${JELLYFIN_PORT:-8096}:8096"
 
   # ── Indexers ───────────────────────────────────────────────────────────────
   # No /data mount: Prowlarr only brokers indexer definitions to the *arr apps.
@@ -42,44 +78,85 @@ services:
     image: lscr.io/linuxserver/prowlarr:latest
     container_name: prowlarr
     restart: unless-stopped
+    logging: *logging
+    security_opt: *security
+    # /ping is unauthenticated by design in the *arrs, which is exactly what a
+    # healthcheck needs — no API key baked into the compose file.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9696/ping || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     environment:
       <<: *env
       # Pinning the key makes it known before first start, which is what lets
       # scripts/provision.sh configure the stack without scraping config.xml.
       # Applied at runtime; never written to config.xml.
       PROWLARR__AUTH__APIKEY: ${PROWLARR_API_KEY:-}
+      # Auth is pinned here, not left to the first-run wizard. These are
+      # re-applied on every container start, so an accidental UI flip to
+      # DisabledForLocalAddresses reverts on the next restart instead of
+      # silently persisting — which matters because Caddy reaches the backends
+      # over the compose bridge, so every proxied request has a private source
+      # address and would bypass that setting. Credentials are not here: the
+      # *arrs keep those in their database, so provision.sh sets them by API.
+      PROWLARR__AUTH__METHOD: ${ARR_AUTH_METHOD:-Forms}
+      PROWLARR__AUTH__REQUIRED: ${ARR_AUTH_REQUIRED:-Enabled}
     volumes:
       - ${CONFIG_ROOT:-/opt/mediaserver}/prowlarr:/config
     ports:
-      - "${BIND_ADDR:-0.0.0.0}:${PROWLARR_PORT:-9696}:9696"
+      - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${PROWLARR_PORT:-9696}:9696"
 
   # ── TV and anime ───────────────────────────────────────────────────────────
   sonarr:
     image: lscr.io/linuxserver/sonarr:latest
     container_name: sonarr
     restart: unless-stopped
+    logging: *logging
+    security_opt: *security
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8989/ping || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     environment:
       <<: *env
       SONARR__AUTH__APIKEY: ${SONARR_API_KEY:-}
+      # See the note on prowlarr — auth is pinned, not wizard-configured.
+      SONARR__AUTH__METHOD: ${ARR_AUTH_METHOD:-Forms}
+      SONARR__AUTH__REQUIRED: ${ARR_AUTH_REQUIRED:-Enabled}
     volumes:
       - ${CONFIG_ROOT:-/opt/mediaserver}/sonarr:/config
       - ${DATA_ROOT:-/data}:/data
     ports:
-      - "${BIND_ADDR:-0.0.0.0}:${SONARR_PORT:-8989}:8989"
+      - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${SONARR_PORT:-8989}:8989"
 
   # ── Films ──────────────────────────────────────────────────────────────────
   radarr:
     image: lscr.io/linuxserver/radarr:latest
     container_name: radarr
     restart: unless-stopped
+    logging: *logging
+    security_opt: *security
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:7878/ping || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     environment:
       <<: *env
       RADARR__AUTH__APIKEY: ${RADARR_API_KEY:-}
+      # See the note on prowlarr — auth is pinned, not wizard-configured.
+      RADARR__AUTH__METHOD: ${ARR_AUTH_METHOD:-Forms}
+      RADARR__AUTH__REQUIRED: ${ARR_AUTH_REQUIRED:-Enabled}
     volumes:
       - ${CONFIG_ROOT:-/opt/mediaserver}/radarr:/config
       - ${DATA_ROOT:-/data}:/data
     ports:
-      - "${BIND_ADDR:-0.0.0.0}:${RADARR_PORT:-7878}:7878"
+      - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${RADARR_PORT:-7878}:7878"
 
   # ── Subtitles ──────────────────────────────────────────────────────────────
   # Needs /data: it writes subtitle files alongside the media.
@@ -87,19 +164,37 @@ services:
     image: lscr.io/linuxserver/bazarr:latest
     container_name: bazarr
     restart: unless-stopped
+    logging: *logging
+    security_opt: *security
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:6767/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     environment:
       <<: *env
     volumes:
       - ${CONFIG_ROOT:-/opt/mediaserver}/bazarr:/config
       - ${DATA_ROOT:-/data}:/data
     ports:
-      - "${BIND_ADDR:-0.0.0.0}:${BAZARR_PORT:-6767}:6767"
+      - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${BAZARR_PORT:-6767}:6767"
 
   # ── Download client ────────────────────────────────────────────────────────
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:latest
     container_name: qbittorrent
     restart: unless-stopped
+    logging: *logging
+    security_opt: *security
+    # 403 is the healthy answer here — it means the Web UI is up and refusing an
+    # unauthenticated request. Only a connection failure is unhealthy.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:8080/api/v2/app/version || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     environment:
       <<: *env
       WEBUI_PORT: 8080
@@ -109,9 +204,9 @@ services:
       - ${DATA_ROOT:-/data}:/data
     # Moves onto gluetun when the VPN is enabled — see the block at the bottom.
     ports:
-      - "${BIND_ADDR:-0.0.0.0}:${QBIT_PORT:-8080}:8080"
-      - "${BIND_ADDR:-0.0.0.0}:${QBIT_TORRENT_PORT:-6881}:6881/tcp"
-      - "${BIND_ADDR:-0.0.0.0}:${QBIT_TORRENT_PORT:-6881}:6881/udp"
+      - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${QBIT_PORT:-8080}:8080"
+      - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${QBIT_TORRENT_PORT:-6881}:6881/tcp"
+      - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${QBIT_TORRENT_PORT:-6881}:6881/udp"
 
   # ── Usenet download client ─────────────────────────────────────────────────
   # Runs alongside qBittorrent, not instead of it. The *arrs speak both
@@ -124,6 +219,14 @@ services:
     image: lscr.io/linuxserver/sabnzbd:latest
     container_name: sabnzbd
     restart: unless-stopped
+    logging: *logging
+    security_opt: *security
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:8080/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     environment:
       <<: *env
     volumes:
@@ -132,7 +235,7 @@ services:
     # Container port is 8080, same as qBittorrent's — no clash, they are
     # separate network namespaces. Only the host-side port has to differ.
     ports:
-      - "${BIND_ADDR:-0.0.0.0}:${SAB_PORT:-8085}:8080"
+      - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${SAB_PORT:-8085}:8080"
 
   # ── Requests ───────────────────────────────────────────────────────────────
   # The household front door. Search, discover, and request — requests flow
@@ -144,17 +247,30 @@ services:
     image: fallenbagel/jellyseerr:latest
     container_name: jellyseerr
     restart: unless-stopped
+    logging: *logging
+    security_opt: *security
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:5055/api/v1/status || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     environment:
       TZ: ${TZ:-Africa/Johannesburg}
       LOG_LEVEL: info
     volumes:
       - ${CONFIG_ROOT:-/opt/mediaserver}/jellyseerr:/app/config
     ports:
-      - "${BIND_ADDR:-0.0.0.0}:${SEERR_PORT:-5055}:5055"
+      - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${SEERR_PORT:-5055}:5055"
+    # Jellyseerr reads libraries from Jellyfin and pushes requests into the
+    # *arrs, so it wants them answering, not merely started.
     depends_on:
-      - jellyfin
-      - sonarr
-      - radarr
+      jellyfin:
+        condition: service_healthy
+      sonarr:
+        condition: service_healthy
+      radarr:
+        condition: service_healthy
 
   # ── Quality profile sync ───────────────────────────────────────────────────
   # Pulls Trash Guides profiles and anime release-group scores into Sonarr and
@@ -163,6 +279,8 @@ services:
     image: ghcr.io/recyclarr/recyclarr:latest
     container_name: recyclarr
     restart: unless-stopped
+    logging: *logging
+    security_opt: *security
     user: ${PUID:-1000}:${PGID:-1000}
     environment:
       TZ: ${TZ:-Africa/Johannesburg}
@@ -174,9 +292,13 @@ services:
       # is version-controlled in this repo and mounted read-only over it.
       - ${CONFIG_ROOT:-/opt/mediaserver}/recyclarr:/config
       - ./config/recyclarr/recyclarr.yml:/config/recyclarr.yml:ro
+    # A sync against a half-started Sonarr fails and then waits a whole day for
+    # the next @daily run, so wait for them to actually answer.
     depends_on:
-      - sonarr
-      - radarr
+      sonarr:
+        condition: service_healthy
+      radarr:
+        condition: service_healthy
 
   # ── Reverse proxy ──────────────────────────────────────────────────────────
   # The only service bound to the tailnet interface rather than the LAN.
@@ -186,6 +308,8 @@ services:
     image: caddy:alpine
     container_name: caddy
     restart: unless-stopped
+    logging: *logging
+    security_opt: *security
     environment:
       CADDY_DOMAIN: ${CADDY_DOMAIN:?CADDY_DOMAIN is unset, e.g. myhost.ts.net}
       # Relocated off Caddy's default /data. In this stack /data means the media
@@ -200,18 +324,35 @@ services:
       - ./caddy/site:/srv/site:ro
       - ${CONFIG_ROOT:-/opt/mediaserver}/caddy/data:/caddydata
       - ${CONFIG_ROOT:-/opt/mediaserver}/caddy/config:/config
+      # Access logs. Caddy is the only remote entry point, so without this there
+      # is no record anywhere of who reached which admin UI.
+      - ${CONFIG_ROOT:-/opt/mediaserver}/caddy/logs:/var/log/caddy
+      # Broad: this socket is the tailnet control API, not just cert issuance,
+      # so a Caddy compromise reaches the tailnet. Accepted for now — see
+      # decisions.md D21 for the non-root alternative and why it is deferred.
       - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock:ro
     ports:
       - "${CADDY_BIND_ADDR:?CADDY_BIND_ADDR is unset. On the target run: tailscale ip -4}:${CADDY_HTTP_PORT:-80}:80"
-      - "${CADDY_BIND_ADDR}:${CADDY_HTTPS_PORT:-443}:443"
+      - "${CADDY_BIND_ADDR:?CADDY_BIND_ADDR is unset. On the target run: tailscale ip -4}:${CADDY_HTTPS_PORT:-443}:443"
+    # Health-gated: started-but-not-listening backends make Caddy serve 502s for
+    # the first minute after a reboot, which reads as a broken stack.
     depends_on:
-      - jellyfin
-      - prowlarr
-      - sonarr
-      - radarr
-      - bazarr
-      - qbittorrent
-      - jellyseerr
+      jellyfin:
+        condition: service_healthy
+      prowlarr:
+        condition: service_healthy
+      sonarr:
+        condition: service_healthy
+      radarr:
+        condition: service_healthy
+      bazarr:
+        condition: service_healthy
+      qbittorrent:
+        condition: service_healthy
+      sabnzbd:
+        condition: service_healthy
+      jellyseerr:
+        condition: service_healthy
 
   # ── VPN gateway — deferred, spec §7 ────────────────────────────────────────
   # Commented out until a provider with working port forwarding is chosen.
@@ -247,6 +388,6 @@ services:
   #   volumes:
   #     - ${CONFIG_ROOT:-/opt/mediaserver}/gluetun:/gluetun
   #   ports:
-  #     - "${BIND_ADDR:-0.0.0.0}:${QBIT_PORT:-8080}:8080"
-  #     - "${BIND_ADDR:-0.0.0.0}:${QBIT_TORRENT_PORT:-6881}:6881/tcp"
-  #     - "${BIND_ADDR:-0.0.0.0}:${QBIT_TORRENT_PORT:-6881}:6881/udp"
+  #     - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${QBIT_PORT:-8080}:8080"
+  #     - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${QBIT_TORRENT_PORT:-6881}:6881/tcp"
+  #     - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${QBIT_TORRENT_PORT:-6881}:6881/udp"

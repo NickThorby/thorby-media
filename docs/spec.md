@@ -104,11 +104,21 @@ rescan, and no broken hardlinks.
 │   ├── movies/
 │   ├── tv/
 │   └── anime/
+├── usenet/
+│   ├── incomplete/
+│   └── complete/
+│       ├── movies/
+│       ├── tv/
+│       └── anime/
 └── media/
     ├── movies/
     ├── tv/
     └── anime/
 ```
+
+`usenet/` is a sibling of `torrents/` and `media/` for the same reason they are
+siblings of each other: everything must sit on one filesystem or imports stop
+hardlinking (§3.3). Both download trees have to be checked, not just one.
 
 `/data` is bind-mounted to `/mnt/disk1/data` and is the only path any
 container ever sees.
@@ -188,13 +198,25 @@ All services run as Docker containers, orchestrated by a single
 | Service | Image | Port | Purpose |
 |---|---|---|---|
 | Jellyfin | `lscr.io/linuxserver/jellyfin` | 8096 | Media server, Infuse source |
+| Jellyseerr | `fallenbagel/jellyseerr` | 5055 | Requests — the household front door |
 | Prowlarr | `lscr.io/linuxserver/prowlarr` | 9696 | Indexer manager |
 | Sonarr | `lscr.io/linuxserver/sonarr` | 8989 | TV and anime |
 | Radarr | `lscr.io/linuxserver/radarr` | 7878 | Films |
 | Bazarr | `lscr.io/linuxserver/bazarr` | 6767 | Subtitles |
-| qBittorrent | `lscr.io/linuxserver/qbittorrent` | 8080 | Download client |
+| qBittorrent | `lscr.io/linuxserver/qbittorrent` | 8080 | Torrent download client |
+| SABnzbd | `lscr.io/linuxserver/sabnzbd` | 8085 | Usenet download client |
+| Recyclarr | `ghcr.io/recyclarr/recyclarr` | n/a | Trash Guides quality profile sync |
 | Caddy | `caddy:alpine` | 80/443 | Reverse proxy, Tailscale-bound |
 | Gluetun | `qmcgaw/gluetun` | n/a | VPN gateway (deferred, see §7) |
+
+Both download protocols are present deliberately. The *arrs speak both and pick
+per release: SABnzbd is given priority 1 because Usenet is faster, has better
+retention and carries no seeding obligation, and qBittorrent priority 2. They
+are not redundant — Usenet covers anime poorly, so in practice Usenet carries TV
+and film while torrents carry anime. Note that Usenet needs two subscriptions
+from different companies: a **provider** (the news server holding the articles)
+and an **indexer** (the catalogue that hands over an `.nzb`). Indexers alone
+download nothing. See decisions.md D14.
 
 ### 4.1 Volume mapping rule
 
@@ -260,12 +282,19 @@ TLS for the admin UIs without any public exposure.
 
 Reverse proxy targets:
 
+- `<host>.ts.net` -> the landing page (static, served by Caddy itself)
+- `jellyfin.<host>.ts.net` -> `jellyfin:8096`
+- `seerr.<host>.ts.net` -> `jellyseerr:5055`
 - `sonarr.<host>.ts.net` -> `sonarr:8989`
 - `radarr.<host>.ts.net` -> `radarr:7878`
 - `prowlarr.<host>.ts.net` -> `prowlarr:9696`
 - `bazarr.<host>.ts.net` -> `bazarr:6767`
 - `qbit.<host>.ts.net` -> `qbittorrent:8080`
-- `jellyfin.<host>.ts.net` -> `jellyfin:8096`
+- `sab.<host>.ts.net` -> `sabnzbd:8080`
+
+Caddy also writes a JSON access log. It is the only remote entry point and none
+of the apps behind it record who reached them, so it is the only place an access
+record can exist at all.
 
 ### 5.3 Security constraints
 
@@ -281,6 +310,28 @@ Additionally:
 - Enable authentication in every *arr app
 - Leave qBittorrent's external-program setting empty
 - UFW: allow SSH and the Tailscale interface; deny inbound otherwise
+
+None of these can be left to a human remembering. Each is either pinned in
+configuration or asserted by `scripts/audit-auth.sh`, which is run against the
+live stack and fails loudly. Three things are worth stating explicitly because
+they are not obvious:
+
+- **Authentication must be required for *all* addresses, not just remote ones.**
+  The *arrs offer `AuthenticationRequired = DisabledForLocalAddresses`, which is
+  common advice and is wrong here: Caddy reaches the backends over the compose
+  bridge, so every proxied request carries a private source address and skips
+  authentication. Verified — with that setting, `GET /` returns 200 with no
+  login. The auth method and scope are therefore pinned as environment variables
+  in `docker-compose.yml`, which are re-applied on every container start, so an
+  accidental UI change reverts rather than persisting.
+- **UFW does not filter Docker-published ports.** Published ports are DNAT'd and
+  traverse `FORWARD`, never `INPUT`, so `ufw default deny incoming` does not
+  apply to any service in this stack. `setup.sh` installs matching rules in the
+  `DOCKER-USER` chain; without them the only real boundary is the absence of a
+  router port forward. See decisions.md D19.
+- **SABnzbd is the same class of risk as qBittorrent.** It runs post-processing
+  scripts, so an open SABnzbd UI is arbitrary command execution just as an open
+  qBittorrent UI is. Bazarr has full write access to the library.
 
 ---
 
@@ -376,7 +427,9 @@ Claude Code should produce:
 2. `.env` template for `PUID`, `PGID`, `TZ` (Africa/Johannesburg), and paths
 3. `Caddyfile` implementing §5.2, bound to the Tailscale interface
 4. `setup.sh` covering: package installation, user and group creation,
-   directory tree creation, fstab entries, smartd configuration, and UFW rules
+   directory tree creation, fstab entries, smartd configuration, SSH hardening,
+   unattended security updates, the config-backup timer, and UFW rules
+   (including the `DOCKER-USER` chain — see §5.3)
 5. `README.md` documenting the configuration sequence in §6 and the mergerfs
    migration path in §3.6
 
@@ -386,9 +439,12 @@ Before considering the build complete:
 
 - [ ] `vainfo` reports HEVC and H.264 encode/decode entrypoints
 - [ ] `/dev/dri/renderD128` is visible inside the Jellyfin container
-- [ ] A test import produces a shared inode (`ls -li`), not a copy
+- [ ] A test import produces a shared inode (`ls -li`), not a copy —
+      for **both** `torrents/` and `usenet/`
 - [ ] Disk usage does not double after import
 - [ ] All services reachable over Tailscale, none over the public IP
 - [ ] `smartd` sends a test alert successfully
 - [ ] qBittorrent default credentials changed
+- [ ] `scripts/audit-auth.sh` passes — every app enforces authentication
+- [ ] A config backup restores and the restored Sonarr database opens
 - [ ] Machine boots unattended and all containers start after a hard power cut
