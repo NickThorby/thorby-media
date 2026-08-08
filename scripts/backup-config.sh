@@ -112,7 +112,7 @@ sleep 10
 step "Archiving $CONFIG_ROOT"
 
 # Caddy's certificate store and the Recyclarr guide clone are both reproducible
-# — certs reissue from tailscaled, and Recyclarr re-clones on next sync — and
+# — Let's Encrypt reissues, and Recyclarr re-clones on next sync — and
 # together they are most of the bulk. Logs are excluded for the same reason.
 tar -czf "$archive" \
   --exclude='*/caddy/data/*' \

@@ -5,8 +5,8 @@ Guidance for Claude Code working in this repository.
 ## What this repo is
 
 Infrastructure-as-config for a single-box home media server: Jellyfin + the *arr
-stack + qBittorrent, orchestrated by one `docker-compose.yml`, reached over
-Tailscale, played back on Apple TV via Infuse.
+stack + qBittorrent, orchestrated by one `docker-compose.yml`, reached over a
+self-hosted WireGuard tunnel, played back on Apple TV via Infuse.
 
 The authoritative requirements live in **[`docs/spec.md`](docs/spec.md)**. If
 anything here disagrees with the spec, the spec wins — fix this file.
@@ -26,7 +26,7 @@ until the box was built and was removed with it.
 | Docker | docker-ce from Docker's official repo |
 | CPU | Intel i7-8700K, Quick Sync iGPU |
 | Media disk | 8 TB ext4 at `/mnt/disk1`, bind-mounted to `/data` |
-| Access | public 80/443 for three names; Tailscale for admin |
+| Access | public 80/443 for three names; WireGuard (`wg-easy`) for admin |
 
 The scripts assume Debian: bash 5, GNU coreutils, `systemd`, `ufw`, and a Docker
 daemon. `setup.sh` refuses to run anywhere else, and `validate.sh` needs GNU
@@ -55,35 +55,52 @@ requiring explicit justification.
 3. **`PUID=1000` / `PGID=1000`** everywhere, matching the `media` user that owns
    `/mnt/disk1/data`. Jellyfin additionally needs the host's `render` GID via
    `group_add` for `/dev/dri` access.
-4. **Exactly three things are public: the landing page, Jellyfin and
+4. **Exactly three HTTP services are public: the landing page, Jellyfin and
    Jellyseerr.** They are served by Caddy at `{$PUBLIC_DOMAIN}` with ports 80
-   and 443 forwarded from the router. The other six apps are excluded
+   and 443 forwarded from the router. The other seven apps are excluded
    *structurally*, not carefully: they have **no route** in `caddy/sites.caddy`,
    **no public DNS record**, and the `DOCKER-USER` chain returns only 80/443
    from off-box. Any one of those alone would do; the point is that adding a
    route is not enough to expose one by accident, and `validate.sh` fails if any
-   of the six names appears in the routes file at all.
+   of those names appears in the routes file at all.
 
    qBittorrent's "run external program on completion" and SABnzbd's
    post-processing scripts are both arbitrary command execution by design — a
    session on either is a shell on the box. That is why the exclusion is
    mechanical (decisions.md D25, spec §5.3).
 
-   Admin access is Tailscale plus `<lan-ip>:<port>`, with nothing proxying it.
+   The router also forwards **UDP `WG_PORT`**, and that does not weaken the
+   above: a WireGuard port does not answer an unauthenticated probe at all, so
+   it adds no reachable surface. `WG_UI_PORT` is never forwarded.
+
+   Admin access is WireGuard plus `<lan-ip>:<port>`, with nothing proxying it.
    Service ports publish on the LAN via `BIND_ADDR`, which is intended and is
-   what both the tailnet path and Infuse rely on. Note that plain UFW does not
+   what both the tunnel path and Infuse rely on. Note that plain UFW does not
    filter Docker-published ports at all — the `DOCKER-USER` rules are what make
-   that true (decisions.md D1, D19).
+   that true (decisions.md D1, D19, D26).
 
 5. **Every app enforces authentication, and it is asserted, not assumed.** The
    *arr auth method and scope are pinned as environment variables so they are
    re-applied on every container start; credentials come from `provision.sh`.
-   `scripts/audit-auth.sh` checks all eight apps against the running stack.
+   `scripts/audit-auth.sh` checks all nine apps against the running stack.
    Never set `AuthenticationRequired` to `DisabledForLocalAddresses`: Caddy
    reaches the backends over the compose bridge, so that exemption applies to
    every proxied request and leaves the admin UIs open (decisions.md D18).
+
+   **wg-easy is the exception, and it is a real one.** v15 removed environment
+   configuration, so `INIT_*` applies on *first start only* and the credentials
+   then live in its database — asserted once, assumed thereafter. Never add
+   `PASSWORD` or `PASSWORD_HASH` to fix that: those are v14 variables and v15
+   refuses to start when it sees one. `audit-auth.sh` is the compensating
+   control, and the check that matters most is that the setup wizard is closed
+   (decisions.md D26).
 6. **Gluetun stays commented out** until a VPN provider with working port
    forwarding is chosen (§7). Do not uncomment it speculatively.
+
+   Two unrelated things in this repo are called "VPN". **Gluetun** is an
+   *outbound* client that would carry qBittorrent's traffic and is deferred.
+   **wg-easy** is the *inbound* remote-access server and is expected to be
+   running. wg-easy is not a violation of this invariant.
 
 7. **The landing page makes zero external requests.** Icons are inline SVG, the
    type is a system stack. A CDN link or a webfont renders perfectly for a
@@ -146,9 +163,11 @@ docs/
 
 ## Secrets
 
-Nothing sensitive gets committed. `.env`, API keys, VPN credentials, the real
-tailnet hostname, and the tailnet IP all stay out of git — `.gitignore` covers
-them. The *arr API keys are pinned in `.env` rather than read out of each UI
+Nothing sensitive gets committed. `.env`, API keys, the wg-easy admin password,
+WireGuard peer keys, and the real remote-access hostname all stay out of git —
+`.gitignore` covers them. Peer keys never enter the repo at all: wg-easy keeps
+them in `${CONFIG_ROOT}/wg-easy`, which is also why that directory is part of
+the backup set and must not be shared. The *arr API keys are pinned in `.env` rather than read out of each UI
 (decisions.md D12); treat them as passwords, since a valid key is full control
 of that app. Placeholders in tracked files use the spec's own notation:
 `media.example.com`, `<lan-ip>`, `<render-gid>`, `<disk1-uuid>`.

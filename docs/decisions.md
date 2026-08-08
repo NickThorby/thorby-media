@@ -14,6 +14,9 @@ outstanding. Add to it rather than relitigating a decision in a code comment.
 qBittorrent must never reach the public internet. These are not in conflict, and
 resolving the second by unpublishing every port would break the first.
 
+**Superseded in part by D25 and D26.** Ports 80, 443 and the WireGuard port
+are now forwarded, and the interface is `wg0` rather than `tailscale0`.
+
 The security boundary is: **no router port forwarding**, plus UFW denying
 inbound except SSH and the Tailscale interface. Service ports bind normally so
 the LAN can reach them. Only Caddy is restricted to the Tailscale interface,
@@ -56,8 +59,8 @@ service means editing both files.
 
 Compose auto-loads `.env` from the project directory. The template ships as
 `.env.example` with placeholder values and gets copied on the target. Every
-host-specific value — `PUID`, `PGID`, `TZ`, `RENDER_GID`, `TAILSCALE_IP`,
-`TS_HOSTNAME`, `DATA_ROOT`, `CONFIG_ROOT` — comes from there.
+host-specific value — `PUID`, `PGID`, `TZ`, `RENDER_GID`, `LAN_SUBNET`, the
+`WG_*` block, `DATA_ROOT`, `CONFIG_ROOT` — comes from there.
 
 ### D6. Config root is `${CONFIG_ROOT}`, defaulting to `/opt/mediaserver`
 
@@ -111,6 +114,10 @@ The cost is that `/data` is not browsable from Finder; use
 `docker compose exec`. `scripts/init-tree.sh` creates the §3.1 tree inside it.
 
 ### D10. `LAN_SUBNET` reconciles §5.1 with §5.3
+
+**Extended by D26.** `LAN_SUBNET` is no longer optional: it is half of
+wg-easy's `INIT_ALLOWED_IPS`, so leaving it blank now also means peers get no
+route to the LAN and admin addresses stop resolving from outside the house.
 
 Spec §5.3 says "allow SSH and the Tailscale interface; deny inbound otherwise",
 but applied literally that also blocks §5.1's direct LAN access — including
@@ -170,7 +177,7 @@ and 443. The conclusion survives, but for a different reason, and it is worth
 being explicit rather than leaving a stale justification in place: qBittorrent
 has no public route, no public DNS record and no path through `DOCKER-USER`, so
 there is no name an attacker can rebind that reaches it. A rebinding attack now
-needs a browser already inside the LAN or the tailnet — the same position it
+needs a browser already inside the LAN or the tunnel — the same position it
 needed before.
 
 ### D14. SABnzbd runs alongside qBittorrent, not instead of it
@@ -254,7 +261,7 @@ browser, and it is versioned like everything else.
 No framework: for eight links and some CSS transitions, a build step earns
 nothing and costs a Node toolchain plus a question about whether `dist/` belongs
 in git. There are also **no external requests at all** — icons are inline SVG and
-fonts are system — so the page works over the tailnet with no internet.
+fonts are system — so the page works over the tunnel with no internet.
 
 Links are derived at runtime from `location.host`:
 
@@ -304,6 +311,11 @@ returns 200 with no login. Note that the setting is applied at runtime and is
 
 ### D19. UFW does not filter the container ports, so setup.sh writes DOCKER-USER rules
 
+**Amended by D26.** The interface rule is now `-i wg0`. No rule is needed for
+the WireGuard port itself: wg-easy uses host networking, so the tunnel is a host
+listener that INPUT genuinely filters and it never reaches this chain — the one
+place in this design where a port is *not* subject to the caveat below.
+
 The stated boundary was "no router port forwarding, plus UFW denying inbound"
 (D1, spec §5.3). The second half was not true. Docker publishes ports by DNAT in
 `nat/PREROUTING`; the traffic then traverses `FORWARD`, never `INPUT`, which is
@@ -333,6 +345,10 @@ wizards are done — those two are the only first-run surfaces left that cannot 
 closed from configuration.
 
 ### D21. Caddy keeps the tailscaled socket, for now
+
+**Closed twice.** Resolved by D25, and moot again under D26 — there is no
+tailscaled to hold a socket for. `validate.sh`'s assertion against it was
+removed as unfalsifiable.
 
 `/var/run/tailscale/tailscaled.sock` is mounted into Caddy so it can fetch
 `*.ts.net` certificates (Q2). That socket is the tailnet control API, not a
@@ -439,8 +455,8 @@ squares, which is most of what makes the set read as one page.
 response: the status code is unreadable, so resolution alone is the signal. A 401
 login page, a 404, and Caddy's own 502 for a stopped container all resolve — so a
 dead backend still shows green. What the probe does catch is a route that has
-drifted out of `sites.caddy`, a client that has dropped off the tailnet, and
-broken MagicDNS. Reading the real status would need
+drifted out of `sites.caddy`, a client that has dropped off the VPN, and a
+stale DNS answer. Reading the real status would need
 `Access-Control-Allow-Origin` on all eight proxied admin UIs; adding a CORS
 header to eight admin surfaces to improve a decorative dot is a bad trade, so it
 was considered and rejected.
@@ -448,7 +464,7 @@ was considered and rejected.
 Three states, two appearances. "Up" is the only one with colour; "down" is drawn
 exactly like "unknown", and the distinction lives in visually-hidden text. The
 probe cannot tell a broken service from an untrusted certificate from a client
-that is off the tailnet, and a red dot on the household's home page would
+that is off the VPN, and a red dot on the household's home page would
 generate a support call for a problem that does not exist. If every probe in a
 group fails the dots are hidden outright — an instrument that is not working
 should not report. (This bit hard on the old dev stack, where every probe failed
@@ -464,7 +480,11 @@ invariant 7 in `CLAUDE.md`: a CDN link renders perfectly for a client with
 internet and breaks for one without, and a remote-access client is not
 guaranteed a route out.
 
-### D25. Two doors: a public one for the household, Tailscale for the administrator
+### D25. Two doors: a public one for the household, a VPN for the administrator
+
+**The VPN is wg-easy, not Tailscale, as of D26.** The argument below is
+unaffected — it turns on "a VPN puts you on the LAN", which is a property of any
+VPN, and reads correctly with the names swapped.
 
 The household needs to watch and request without installing anything, so
 Jellyfin and Jellyseerr go on a real domain with the router forwarding 80 and
@@ -517,8 +537,8 @@ written into the page, so `.env` stays the only place a host port is recorded.
 unguarded `querySelector` would throw on the one page that must never look
 broken.
 
-**Admin UIs are plain HTTP.** Encrypted in transit by WireGuard over the tailnet;
-plaintext on the LAN, which was already true under §5.1. TLS for names that
+**Admin UIs are plain HTTP.** Encrypted in transit by WireGuard; plaintext on
+the LAN, which was already true under §5.1. TLS for names that
 resolve only privately is exactly the complexity this decision removes.
 
 **fail2ban watches Caddy, not Jellyfin.** Caddy's JSON access log is the only
@@ -526,6 +546,82 @@ one that records the true client address, so a jail on it can ban an attacker;
 a jail on Jellyfin's log would ban Caddy's container IP and take the household
 offline, unless Jellyfin's `KnownProxies` is set to the compose bridge first.
 The Jellyfin jail is written but ships **disabled** for that reason.
+
+### D26. wg-easy replaces Tailscale as the administrator's door
+
+Self-hosted WireGuard, as a container in the stack, instead of a third-party
+mesh with a hosted control plane. **D25's argument survives this unchanged** —
+it says "a VPN puts you on the LAN, and `BIND_ADDR` already publishes every
+admin app there", never "Tailscale specifically". Only the implementation moves.
+
+**Host networking, and this is the load-bearing choice.** `wg-easy` runs with
+`network_mode: host`, against upstream's reference compose, which puts it on a
+bridge. Two things follow, and both are the reason:
+
+1. *One address works everywhere.* `wg0` is a real host interface, so a packet
+   from a peer arrives at the box's LAN address the same way a packet from the
+   living room does. `http://<lan-ip>:8989` is one URL, at home and away.
+2. *The firewall stays a rename.* `setup.sh` matched `-i tailscale0`; it now
+   matches `-i wg0`. On a bridge there is no `wg0` on the host to match — peer
+   traffic is masqueraded to the container's own bridge address — and D19's
+   interface-scoped `DOCKER-USER` rule would have needed rethinking rather than
+   editing.
+
+The first point is not cosmetic. The landing page templates a single
+`ADMIN_HOST` into every Manage link (`docker-compose.yml`, `index.html`), and
+`validate.sh` forbids hardcoding a host in the page, so there is no clean way to
+render one link for the LAN and another for the tunnel. One address has to work
+from both, or the Manage section is wrong half the time.
+
+**This was arguably broken under Tailscale.** For `<lan-ip>:<port>` to resolve
+from the tailnet, the box needed `tailscale up --advertise-routes=<lan>` and
+every client `--accept-routes`. Neither appears in `setup.sh`, spec §2.2, or the
+README — so the Manage links would very likely have failed from outside the
+house. Never observed either way, because there was never a tailnet. wg-easy
+makes the equivalent explicit and server-side: `INIT_ALLOWED_IPS` is set once
+and baked into every peer config it generates.
+
+**Split tunnel.** `AllowedIPs` is the LAN subnet plus the WireGuard subnet, not
+`0.0.0.0/0`. Ordinary browsing stays off the tunnel, which keeps it cheap enough
+to leave always-on — and an always-on tunnel is what makes "the same address
+works" true in practice rather than in principle. The cost is no exit-node
+behaviour; that was never the requirement.
+
+**Costs accepted.** Peer keys are now ours to manage, and there is no ACL layer
+— `ufw allow in on wg0` is allow-all, exactly as the `tailscale0` rule was. A
+peer is on the LAN. Against that: no third-party control plane, no dependency on
+an account, and the box is no longer one vendor outage from being unreachable.
+
+**`INSECURE=true`, deliberately.** v15 serves HTTPS with a self-signed
+certificate and refuses plain HTTP without this. Plain HTTP matches the other
+admin UIs and the reasoning is unchanged from D25: encrypted in transit by
+WireGuard, plaintext on the LAN, which was already true under §5.1. A
+certificate warning on every visit teaches the wrong reflex.
+
+**No `SYS_MODULE`.** Upstream adds it so the container can `modprobe wireguard`.
+It also lets a container load arbitrary kernel modules, which is a host
+compromise primitive, and the module is in-tree on Debian 13. `setup.sh` loads
+it at boot instead. `NET_ADMIN` is still required and is not negotiable.
+
+**The one real regression against invariant 5.** v15 removed environment
+configuration; `PASSWORD_HASH` is not merely ignored but *refuses to start the
+container*, deliberately, so a v14 config cannot be silently carried across the
+major version. Its replacement, `INIT_*`, applies **on first start only** and
+then the credentials live in wg-easy's own database.
+
+So unlike the *arrs — whose auth is re-applied from the environment on every
+start, which is the whole point of D18 — wg-easy's authentication is *asserted
+once and assumed thereafter*. That is a genuine weakening and is why
+`audit-auth.sh` grew a wg-easy section: it probes the session endpoint for a
+401 and, more importantly, checks the setup wizard is not open. An open wizard
+means `/etc/wireguard` was lost and the next visitor becomes the VPN
+administrator. `validate.sh` separately asserts no `PASSWORD`/`PASSWORD_HASH`
+has been added, since every v14-era tutorial tells you to add one.
+
+**Supersedes, in part:** D1 (the boundary is now no-port-forward *except* 80,
+443 and the WireGuard port), D10, D13, D19 (`-i wg0`), D21 and Q1/Q2 (moot for a
+second time — there is no hosted control plane left to hold a socket for), and
+the Tailscale half of D25.
 
 ---
 

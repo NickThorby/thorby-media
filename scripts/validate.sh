@@ -75,11 +75,21 @@ else
   bad "a service mounts media somewhere other than /data (spec §4.1)"
 fi
 
-# Gluetun is deferred (spec §7) and must stay commented out.
+# Gluetun is deferred (spec §7) and must stay commented out. Note this is the
+# OUTBOUND VPN client for qBittorrent's traffic, nothing to do with wg-easy,
+# which is the inbound remote-access server and is expected to be present.
 if jq -e '.services | has("gluetun") | not' <<<"$rendered" >/dev/null; then
   ok "gluetun still commented out"
 else
   bad "gluetun is active — confirm a provider with port forwarding was chosen"
+fi
+
+# The remote-access door. Absent, and the six admin apps are LAN-only with no
+# way in from outside — which fails quietly, since the stack is otherwise fine.
+if jq -e '.services | has("wg-easy")' <<<"$rendered" >/dev/null; then
+  ok "wg-easy is present"
+else
+  bad "wg-easy is missing — there is no remote administration path"
 fi
 
 echo
@@ -111,18 +121,32 @@ else
   ok "caddy binds to $caddy_ips, not a wildcard"
 fi
 
-# The socket is the tailnet control API, not a cert endpoint, and Caddy runs as
-# root. It existed only to fetch *.ts.net certificates; those are gone, and
-# Caddy now faces the internet. Re-adding it would reinstate S7 against a much
-# worse threat model (decisions.md D21, D25).
-sock=$(jq -r '[.services | to_entries[] as $s | ($s.value.volumes // [])[]
-               | select((.source // "") | test("tailscaled.sock"))
-               | $s.key] | unique | join(", ")' <<<"$rendered")
-if [[ -z "$sock" ]]; then
-  ok "no service mounts tailscaled.sock"
+# wg-easy runs with host networking, so it has no `ports:` and slips past the
+# check above entirely. Its UI bind address is the equivalent control, and the
+# equivalent mistake: a wildcard puts the VPN admin panel on every interface the
+# box ever joins. Unlike a Docker publish this one is at least filtered by UFW,
+# but that is defence in depth, not a reason to bind wide (decisions.md D26).
+wg_host=$(jq -r '.services["wg-easy"].environment.HOST // ""' <<<"$rendered")
+if [[ -z "$wg_host" ]]; then
+  bad "wg-easy does not set HOST — the UI would bind 0.0.0.0"
+  printf '      %s\n' "Set WG_UI_BIND in .env to this box's LAN address."
+elif [[ "$wg_host" == "0.0.0.0" || "$wg_host" == "::" || "$wg_host" == "*" ]]; then
+  bad "wg-easy binds its UI to $wg_host — it must be one LAN address"
 else
-  bad "tailscaled.sock is mounted into: $sock"
-  printf '      %s\n' "An internet-facing container must not hold the tailnet control API."
+  ok "wg-easy binds its UI to $wg_host, not a wildcard"
+fi
+
+# wg-easy v15 refuses to start if either of these is present — deliberately, so
+# a v14 configuration cannot be silently carried across a major upgrade. Every
+# v14-era tutorial tells you to set one, so assert they are absent rather than
+# discovering it as a container that will not come up.
+legacy=$(jq -r '[.services["wg-easy"].environment // {} | keys[]
+                 | select(. == "PASSWORD" or . == "PASSWORD_HASH")] | join(", ")' <<<"$rendered")
+if [[ -z "$legacy" ]]; then
+  ok "wg-easy sets no v14 password variables"
+else
+  bad "wg-easy sets $legacy — v15 refuses to start with these"
+  printf '      %s\n' "Use INIT_USERNAME / INIT_PASSWORD instead (decisions.md D26)."
 fi
 
 # The *arr auth settings are the difference between a login prompt and an

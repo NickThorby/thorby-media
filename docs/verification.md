@@ -95,7 +95,7 @@ df -h /data                          # ...will exceed actual used space if hardl
 
 - [ ] Passes
 
-## 5. Three names public, six apps not — and the certificates issue
+## 5. Three names public, seven apps not — and the certificates issue
 
 The single most important check in this file. Three separate mechanisms are
 supposed to keep the admin apps off the internet (D25); verify each, because
@@ -129,24 +129,66 @@ curl -sk -o /dev/null -w '%{http_code}\n' --resolve "sonarr.<domain>:443:<wan-ip
 
 Anything other than a proxied 200 is correct — Caddy has no site for that name.
 
-**No packet.** From a host on neither the LAN nor the tailnet — a phone on
-mobile data will do:
+**No packet.** From a host on neither the LAN nor the tunnel — a phone on
+mobile data, with WireGuard OFF — will do:
 
 ```bash
-nmap -Pn -p 80,443,8096,8080,8989,7878,5055,6767,9696 <wan-ip>
+nmap -Pn -p 80,443,8096,8080,8989,7878,5055,6767,9696,51821 <wan-ip>
+nmap -Pn -sU -p 51820 <wan-ip>
 ```
 
-Only 80 and 443 open; everything else filtered or closed.
+Only 80 and 443 open on TCP; everything else filtered or closed, `51821`
+included. The UDP scan is expected to report `open|filtered` — WireGuard does
+not answer a probe without a valid key, so nmap cannot tell the two apart. That
+indistinguishability is the property you want.
 
-**Admin access still works.** With Tailscale up on the client:
+**Admin access still works.** With the tunnel up on the client, using the *same*
+address the LAN uses — that equivalence is the thing being tested:
 
 ```bash
 curl -sI http://<lan-ip>:8989 | head -1
 ```
 
 ```bash
-ufw status verbose        # SSH, tailscale0, LAN, and 80/443 allowed
+ufw status verbose        # SSH, wg0, LAN, 80/443 and 51820/udp allowed
 ```
+
+- [ ] Passes
+
+## 5a. WireGuard: the same address works from outside
+
+The property the whole remote-access design turns on (D26). Test it from a phone
+on mobile data, not from anything on the home network.
+
+**On the box**, first — `wg0` must be a *host* interface, not just something
+inside the container. If this fails, the container is on a bridge and the
+firewall rules will never match:
+
+```bash
+ip link show wg0                       # exists, state UNKNOWN/UP
+docker compose ps wg-easy              # healthy
+```
+
+**Add a peer** in the wg-easy UI at `http://<lan-ip>:<WG_UI_PORT>`, scan the QR
+code with the WireGuard app.
+
+**Tunnel up, from mobile data:**
+
+```bash
+curl -sI http://<lan-ip>:8989 | head -1      # Sonarr answers
+curl -sI http://<lan-ip>:<WG_UI_PORT> | head -1   # login page, not a session
+```
+
+The address must be the *same* one that works on the LAN. If you find yourself
+reaching for a `10.8.0.x` address instead, `INIT_ALLOWED_IPS` is not routing the
+LAN and the landing page's Manage links will be broken from outside the house.
+
+**Tunnel down, same device:** neither answers. If they do, the ports are exposed
+some other way and item 5 needs re-reading.
+
+**Split tunnel:** with the tunnel up, ordinary browsing still works and
+`https://ifconfig.me` reports the *phone's* address, not the home WAN address.
+Full-tunnel behaviour here means `INIT_ALLOWED_IPS` is wider than intended.
 
 - [ ] Passes
 
@@ -208,7 +250,7 @@ never `INPUT`. Confirm the `DOCKER-USER` rules are loaded (decisions.md D19):
 sudo iptables -L DOCKER-USER -n -v
 ```
 
-Expect RETURN rules for established traffic, `lo`, `tailscale0`, the LAN subnet
+Expect RETURN rules for established traffic, `lo`, `wg0`, the LAN subnet
 and **tcp dports 80 and 443**, then a final DROP. If the chain is empty,
 `setup.sh` skipped the step — almost certainly because `LAN_SUBNET` is unset in
 `.env`.
@@ -218,7 +260,7 @@ the packet is DNAT'd, traverses `FORWARD`, and dies at the DROP while the router
 configuration looks perfectly correct — so the symptom is "my domain times out"
 with nothing in Caddy's log.
 
-Then prove it from off-box, on a host that is neither on the LAN nor the tailnet
+Then prove it from off-box, on a host that is neither on the LAN nor the tunnel
 (a phone on mobile data is enough):
 
 ```bash
@@ -301,7 +343,7 @@ mid-write and the backup is worthless.
 Presentation, not a control — but if it is wrong, the page is advertising
 hostnames it should not. Check both sides.
 
-From a LAN or tailnet client:
+From a LAN or tunnel client:
 
 ```bash
 curl -s https://<domain>/ | grep -c 'class="manage"'      # 1

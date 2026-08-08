@@ -2,7 +2,7 @@
 
    No build step, no framework, no external requests. Every icon is an inline
    <symbol> in index.html and the type is the system stack, so the page renders
-   in full for a tailnet client with no route to the internet — which is the
+   in full for a VPN client with no route to the internet — which is the
    whole point, not a stylistic preference (decisions.md D17, D24).
 
    Served straight out of the Caddy container that already fronts the stack. */
@@ -446,7 +446,7 @@ a { touch-action: manipulation; }
    Two appearances for three states, on purpose. "up" is the only one with
    colour; "down" is drawn exactly like "unknown", because the probe cannot
    tell a broken service from an untrusted certificate from a client that is
-   not on the tailnet. A red dot on the household's home page would generate a
+   not on the VPN. A red dot on the household's home page would generate a
    support call for a problem that does not exist. The distinction that matters
    is carried in the visually-hidden text next to it (D24). */
 

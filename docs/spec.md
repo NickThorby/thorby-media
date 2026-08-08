@@ -75,17 +75,27 @@ curl git htop
 Docker must come from Docker's official repository, not Debian's `docker.io`
 package.
 
-### 2.2 Tailscale
+### 2.2 Remote access — WireGuard
 
-Install Tailscale and join the tailnet. This is the sole remote access
-mechanism. No ports are forwarded on the router.
+Remote administration is a self-hosted WireGuard server, `wg-easy`, running as
+part of the stack rather than as a host package. There is nothing to install
+here: `docker compose up -d` brings it up and it creates `wg0` on first start.
 
-```
-curl -fsSL https://tailscale.com/install.sh | sh
-tailscale up
-```
+Two host prerequisites, both handled by `setup.sh`, and both needed because the
+container uses host networking and therefore cannot set them itself:
 
-Record the resulting tailnet IP; Caddy binds to it.
+- the `wireguard` module loaded at boot, via `/etc/modules-load.d`
+- IPv4/IPv6 forwarding, via `/etc/sysctl.d/99-wireguard.conf`
+
+The router forwards **UDP `WG_PORT`** in addition to TCP 80 and 443. The wg-easy
+admin UI on `WG_UI_PORT` is never forwarded — it is reachable from the LAN and
+through the tunnel only.
+
+Peers are issued a **split tunnel**: `AllowedIPs` covers the LAN subnet and the
+WireGuard subnet, nothing else. That is what makes an address like
+`http://<lan-ip>:8989` resolve identically at home and away, which the landing
+page depends on — it templates one `ADMIN_HOST` and has no way to render a
+different link per network. See decisions.md D26.
 
 ---
 
@@ -206,8 +216,9 @@ All services run as Docker containers, orchestrated by a single
 | qBittorrent | `lscr.io/linuxserver/qbittorrent` | 8080 | Torrent download client |
 | SABnzbd | `lscr.io/linuxserver/sabnzbd` | 8085 | Usenet download client |
 | Recyclarr | `ghcr.io/recyclarr/recyclarr` | n/a | Trash Guides quality profile sync |
-| Caddy | `caddy:alpine` | 80/443 | Reverse proxy, Tailscale-bound |
-| Gluetun | `qmcgaw/gluetun` | n/a | VPN gateway (deferred, see §7) |
+| Caddy | `caddy:alpine` | 80/443 | Reverse proxy, bound to the LAN address |
+| wg-easy | `ghcr.io/wg-easy/wg-easy` | 51820/udp, 51821 | Remote access — WireGuard server, host networking |
+| Gluetun | `qmcgaw/gluetun` | n/a | Outbound VPN for qBittorrent (deferred, see §7) |
 
 Both download protocols are present deliberately. The *arrs speak both and pick
 per release: SABnzbd is given priority 1 because Usenet is faster, has better
@@ -274,16 +285,17 @@ There are two doors, and which one you use depends on who you are.
 - **The household — public.** `media.thorby.tech` over the internet: the landing
   page, Jellyfin and Jellyseerr, and nothing else. Ports 80 and 443 are
   forwarded from the router to Caddy. No VPN, no app to install.
-- **The administrator — Tailscale.** The six admin apps are reached at
+- **The administrator — WireGuard.** The seven admin apps are reached at
   `<lan-ip>:<port>`, directly, with no proxy in front of them. On the LAN that
-  works already; from anywhere else, join the tailnet first. Nothing about them
-  is public, and nothing about them is routed.
+  works already; from anywhere else, bring up the tunnel first and the same
+  address works. Nothing about them is public, and nothing about them is routed.
 - **Local LAN:** direct access to all services by IP and port, unchanged.
-- **Apple TV:** Infuse connects to Jellyfin over LAN. For remote playback,
-  install Tailscale on the Apple TV.
+- **Apple TV:** Infuse connects to Jellyfin over LAN. Remote playback goes
+  through the public Jellyfin name rather than the VPN, so the Apple TV needs no
+  client of its own.
 
 The asymmetry is the point. The two apps the household needs are the two whose
-worst case is a leaked media library; the six it does not need are the ones whose
+worst case is a leaked media library; the ones it does not need are those whose
 worst case is a shell (§5.3).
 
 ### 5.2 Caddy
@@ -335,7 +347,7 @@ Additionally:
 - Change qBittorrent's default credentials on first login
 - Enable authentication in every *arr app
 - Leave qBittorrent's external-program setting empty
-- UFW: allow SSH, the Tailscale interface, the LAN, and 80/443; deny otherwise
+- UFW: allow SSH, `wg0`, the LAN, 80/443 and the WireGuard port; deny otherwise
 
 None of these can be left to a human remembering. Each is either pinned in
 configuration or asserted by `scripts/audit-auth.sh`, which is run against the
@@ -451,7 +463,7 @@ Claude Code should produce:
 
 1. `docker-compose.yml` implementing §4, with Gluetun present but commented
 2. `.env` template for `PUID`, `PGID`, `TZ` (Africa/Johannesburg), and paths
-3. `Caddyfile` implementing §5.2, bound to the Tailscale interface
+3. `Caddyfile` implementing §5.2, bound to the LAN address the router forwards to
 4. `setup.sh` covering: package installation, user and group creation,
    directory tree creation, fstab entries, smartd configuration, SSH hardening,
    unattended security updates, the config-backup timer, and UFW rules
@@ -468,7 +480,8 @@ Before considering the build complete:
 - [ ] A test import produces a shared inode (`ls -li`), not a copy —
       for **both** `torrents/` and `usenet/`
 - [ ] Disk usage does not double after import
-- [ ] All services reachable over Tailscale, none over the public IP
+- [ ] Admin apps reachable over WireGuard at the same `<lan-ip>:<port>` used on
+      the LAN, and none of them reachable over the public IP
 - [ ] `smartd` sends a test alert successfully
 - [ ] qBittorrent default credentials changed
 - [ ] `scripts/audit-auth.sh` passes — every app enforces authentication

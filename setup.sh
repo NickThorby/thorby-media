@@ -264,8 +264,9 @@ EOF
   fi
 
   # fail2ban's Debian default already watches sshd; enabling the service is all
-  # that is needed there. It matters most on the LAN-facing side, since the
-  # tailnet side is authenticated by Tailscale before a packet reaches sshd.
+  # that is needed there. It matters most on the LAN-facing side, since a packet
+  # arriving over wg0 has already been authenticated by WireGuard's key exchange
+  # before sshd ever sees it.
   configure_fail2ban_web
   run systemctl enable --now fail2ban
   ok "fail2ban enabled (sshd jail, plus web jails if PUBLIC_DOMAIN is set)"
@@ -275,8 +276,8 @@ EOF
 #
 # Nothing else in the stack rate-limits anything: Caddy has no rate_limit
 # directive without a plugin, and neither Jellyfin nor Jellyseerr locks an
-# account out by default. Fine when the box was tailnet-only; thin for a login
-# page anyone can reach (decisions.md D25).
+# account out by default. Fine when the box was private; thin for a login page
+# anyone can reach (decisions.md D25).
 configure_fail2ban_web() {
   [[ -n "${PUBLIC_DOMAIN:-}" ]] || return 0
   [[ -d /etc/fail2ban ]] || { warn "/etc/fail2ban not found — skipping web jails"; return 0; }
@@ -613,6 +614,60 @@ EOF
   info "remove -M test afterwards, or every restart will mail you"
 }
 
+# Host-side prerequisites for the wg-easy container.
+#
+# Both of these would normally be the container's job, and cannot be, because it
+# runs with network_mode: host (decisions.md D26):
+#
+#   - Docker rejects `sysctls:` for net.* under host networking, since those are
+#     host-global rather than namespaced. They have to be set here.
+#   - The container drops SYS_MODULE, so it cannot modprobe wireguard itself.
+#     The module is in-tree on Debian 13; loading it at boot is the cheaper half
+#     of that trade.
+configure_wireguard_host() {
+  step "WireGuard host prerequisites"
+
+  local modconf=/etc/modules-load.d/wireguard.conf
+  local sysconf=/etc/sysctl.d/99-wireguard.conf
+
+  if [[ -f "$modconf" ]]; then
+    ok "$modconf already present"
+  elif $DRY_RUN; then
+    printf '  \033[36m[dry-run]\033[0m write %s\n' "$modconf"
+  else
+    echo wireguard > "$modconf"
+    ok "wireguard module will load at boot ($modconf)"
+  fi
+
+  if lsmod 2>/dev/null | grep -q '^wireguard'; then
+    ok "wireguard module loaded"
+  else
+    run modprobe wireguard && ok "wireguard module loaded" \
+      || warn "modprobe wireguard failed — wg0 will not come up"
+  fi
+
+  # ip_forward is what lets a peer's packets reach anything but this box.
+  # Docker already sets it at daemon start; writing it here makes it explicit
+  # and survives a boot where Docker is masked or slow.
+  if [[ -f "$sysconf" ]]; then
+    ok "$sysconf already present"
+  elif $DRY_RUN; then
+    printf '  \033[36m[dry-run]\033[0m write %s and reload sysctl\n' "$sysconf"
+  else
+    cat > "$sysconf" <<'EOF'
+# Managed by setup.sh — required by the wg-easy container, which runs with host
+# networking and therefore cannot set these itself.
+net.ipv4.ip_forward=1
+net.ipv4.conf.all.src_valid_mark=1
+net.ipv6.conf.all.disable_ipv6=0
+net.ipv6.conf.all.forwarding=1
+net.ipv6.conf.default.forwarding=1
+EOF
+    run sysctl --system >/dev/null
+    ok "forwarding sysctls applied ($sysconf)"
+  fi
+}
+
 configure_firewall() {
   step "Firewall"
 
@@ -620,8 +675,11 @@ configure_firewall() {
   run ufw --force default allow outgoing
 
   # Scoped rather than `ufw allow OpenSSH`, which is unsourced and accepts SSH
-  # from anywhere the host can be reached. The tailnet rule below already covers
+  # from anywhere the host can be reached. The wg0 rule below already covers
   # remote administration, so SSH only needs to reach the LAN.
+  #
+  # These two rules are a pair. Removing the wg0 allow without widening this one
+  # leaves a headless box with no remote SSH at all (review-2026-08 S5).
   if [[ -n "${LAN_SUBNET:-}" ]]; then
     run ufw allow from "$LAN_SUBNET" to any port 22 proto tcp
     ok "SSH allowed from ${LAN_SUBNET} only"
@@ -631,14 +689,29 @@ configure_firewall() {
     warn "  Set LAN_SUBNET in .env and re-run to scope it to the LAN."
   fi
 
-  if ip link show tailscale0 >/dev/null 2>&1; then
-    run ufw allow in on tailscale0
-    ok "allowed all traffic on tailscale0"
+  # wg-easy creates wg0 on first start, so on a fresh box this is expected to be
+  # absent the first time through. Bring the stack up, then re-run.
+  if ip link show wg0 >/dev/null 2>&1; then
+    run ufw allow in on wg0
+    ok "allowed all traffic on wg0"
   else
-    warn "tailscale0 not found — install Tailscale and run 'tailscale up', then re-run this script"
+    warn "wg0 not found — the wg-easy container creates it on first start."
+    warn "  Run 'docker compose up -d wg-easy', then re-run this script."
   fi
 
-  # Spec §5.3 says "allow SSH and the Tailscale interface; deny inbound
+  # The tunnel itself. UDP, and genuinely filtered by UFW: wg-easy uses host
+  # networking, so this is a host listener on the INPUT chain rather than a
+  # Docker publish that would bypass it (decisions.md D19, D26).
+  if [[ -n "${WG_PORT:-}" ]]; then
+    run ufw allow "${WG_PORT}/udp"
+    ok "allowed ${WG_PORT}/udp for WireGuard"
+    info "WG_UI_PORT (${WG_UI_PORT:-51821}) is deliberately NOT opened here — the"
+    info "  admin UI is reachable from the LAN and the tunnel only."
+  else
+    warn "WG_PORT unset in .env — no WireGuard port opened, so no peer can connect"
+  fi
+
+  # Spec §5.3 says "allow SSH and the remote-access interface; deny inbound
   # otherwise", but taken literally that also blocks §5.1's direct LAN access
   # — including Infuse on the Apple TV reaching Jellyfin, which is the primary
   # playback path. Allowing the LAN subnet reconciles the two: the home network
@@ -648,25 +721,25 @@ configure_firewall() {
     run ufw allow from "$LAN_SUBNET"
     ok "allowed inbound from LAN ${LAN_SUBNET}"
   else
-    warn "LAN_SUBNET is unset in .env, so this will be a tailnet-only box:"
+    warn "LAN_SUBNET is unset in .env, so this will be a tunnel-only box:"
     warn "  LAN clients cannot reach Jellyfin or any *arr UI by IP and port."
     warn "  Infuse on the Apple TV will not find Jellyfin unless the Apple TV"
-    warn "  is itself on the tailnet."
+    warn "  is itself a WireGuard peer."
     warn "Set LAN_SUBNET (e.g. 192.168.1.0/24) in .env and re-run to allow it."
   fi
 
   # The public front door. Only reached when PUBLIC_DOMAIN is set, so a
-  # tailnet-and-LAN-only box stays exactly as it was.
+  # tunnel-and-LAN-only box stays exactly as it was.
   #
   # Caddy serves three names here — the landing page, Jellyfin and Jellyseerr.
-  # The six admin apps are not routed through it at all, so opening 80 and 443
+  # The seven admin apps are not routed through it at all, so opening 80 and 443
   # exposes those three and nothing else (decisions.md D25, spec §5.3).
   if [[ -n "${PUBLIC_DOMAIN:-}" ]]; then
     run ufw allow 80/tcp
     run ufw allow 443/tcp
     ok "allowed 80/443 from any source for ${PUBLIC_DOMAIN}"
   else
-    info "PUBLIC_DOMAIN unset — no public ports opened, box is LAN + tailnet only"
+    info "PUBLIC_DOMAIN unset — no public HTTP ports opened, box is LAN + tunnel only"
   fi
 
   configure_docker_firewall
@@ -687,7 +760,7 @@ configure_docker_firewall() {
   #
   # Docker leaves the DOCKER-USER chain empty and evaluates it before its own
   # rules, precisely so this can be fixed. These rules put container traffic
-  # under the same policy the rest of the box already has: the tailnet and the
+  # under the same policy the rest of the box already has: the tunnel and the
   # LAN in, everything else out.
   #
   # Without this, the real boundary is only "no port forwarding on the router" —
@@ -741,7 +814,11 @@ ${marker}
 *filter
 :DOCKER-USER - [0:0]
 -A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
--A DOCKER-USER -i tailscale0 -j RETURN
+# wg0 is a host interface because wg-easy runs with host networking, so peer
+# traffic aimed at a published container port is matchable here by interface.
+# No rule is needed for the tunnel port itself: that is a host listener and
+# never reaches this chain (decisions.md D26).
+-A DOCKER-USER -i wg0 -j RETURN
 -A DOCKER-USER -i lo -j RETURN
 -A DOCKER-USER -s ${LAN_SUBNET} -j RETURN
 ${public_rules}
@@ -754,9 +831,9 @@ COMMIT
 # END MEDIASERVER DOCKER-USER
 EOF
   if [[ -n "${PUBLIC_DOMAIN:-}" ]]; then
-    ok "DOCKER-USER rules appended (tailnet + ${LAN_SUBNET} + public 80/443 in)"
+    ok "DOCKER-USER rules appended (wg0 + ${LAN_SUBNET} + public 80/443 in)"
   else
-    ok "DOCKER-USER rules appended (tailnet + ${LAN_SUBNET} in, rest dropped)"
+    ok "DOCKER-USER rules appended (wg0 + ${LAN_SUBNET} in, rest dropped)"
   fi
   info "verify after reload:  iptables -L DOCKER-USER -n -v"
 }
@@ -764,35 +841,42 @@ EOF
 report() {
   step "Values for .env"
 
-  local render_gid lan_ip tailscale_ip
+  local render_gid lan_ip
   render_gid=$(getent group render 2>/dev/null | cut -d: -f3 || true)
-  # The address the router forwards 80/443 to, and where the Manage links point.
+  # The address the router forwards 80/443 to, where the Manage links point, and
+  # what the wg-easy UI binds to. One address, three variables, on purpose: a
+  # peer reaches the box by the same address the LAN does (decisions.md D26).
   lan_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' | head -1 || true)
-  tailscale_ip=$(tailscale ip -4 2>/dev/null | head -1 || true)
 
   printf '  RENDER_GID=%s\n' "${render_gid:-<none — iGPU disabled in BIOS?>}"
   printf '  CADDY_BIND_ADDR=%s\n' "${lan_ip:-<none — could not detect the LAN address>}"
   printf '  ADMIN_HOST=%s\n' "${lan_ip:-<none — could not detect the LAN address>}"
+  printf '  WG_UI_BIND=%s\n' "${lan_ip:-<none — could not detect the LAN address>}"
   printf '  PUBLIC_DOMAIN=%s\n' "${PUBLIC_DOMAIN:-<your domain, e.g. media.example.com>}"
   printf '  ACME_EMAIL=%s\n' "${ACME_EMAIL:-<contact address for the ACME account>}"
+  printf '  LAN_SUBNET=%s\n' "${LAN_SUBNET:-<your home subnet, e.g. 192.168.1.0/24>}"
 
   step "Next"
-  info "1. Put the values above into .env"
+  info "1. Put the values above into .env, plus WG_HOST, WG_USER and WG_PASS"
   info "2. DNS: A records for PUBLIC_DOMAIN, jellyfin.<domain>, seerr.<domain>"
-  info "   pointing at this site's WAN address."
-  info "3. Router: forward TCP 80 and 443 to ${lan_ip:-<lan-ip>}. Both — Let's"
-  info "   Encrypt validates over 80 and will not issue without it."
+  info "   and WG_HOST, pointing at this site's WAN address."
+  info "3. Router, two forwards to ${lan_ip:-<lan-ip>}:"
+  info "     TCP 80 and 443  — both; Let's Encrypt validates over 80"
+  info "     UDP ${WG_PORT:-51820}       — the WireGuard tunnel"
+  info "   Do NOT forward ${WG_UI_PORT:-51821}. The wg-easy UI is LAN and tunnel only."
   info "4. Verify the iGPU:  vainfo | grep -Ei 'h264|hevc'"
   info "5. Start the stack:  docker compose up -d"
-  info "6. Prove hardlinking: ./scripts/test-hardlinks.sh"
-  info "7. Work through docs/verification.md"
+  info "6. Re-run this script — wg0 exists now, so the firewall rules it"
+  info "   skipped above get installed."
+  info "7. Prove hardlinking: ./scripts/test-hardlinks.sh"
+  info "8. Work through docs/verification.md"
   echo
-  if [[ -n "$tailscale_ip" ]]; then
-    info "Tailscale is up at ${tailscale_ip} — the admin apps are reachable from"
-    info "anywhere at ${lan_ip:-<lan-ip>}:<port> once a client joins the tailnet."
+  if ip link show wg0 >/dev/null 2>&1; then
+    info "wg0 is up — the admin apps are reachable at ${lan_ip:-<lan-ip>}:<port>"
+    info "from the LAN and from any WireGuard peer, by the same address."
   else
-    warn "Tailscale is not up. Without it the six admin apps are LAN-only:"
-    warn "  curl -fsSL https://tailscale.com/install.sh | sh && tailscale up"
+    warn "wg0 does not exist yet. Until the wg-easy container has started once,"
+    warn "the seven admin apps are LAN-only:  docker compose up -d wg-easy"
   fi
   echo
 }
@@ -811,5 +895,6 @@ configure_smartd
 configure_unattended_upgrades
 harden_ssh
 install_backup_timer
+configure_wireguard_host
 configure_firewall
 report

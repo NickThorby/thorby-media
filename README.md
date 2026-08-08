@@ -2,7 +2,8 @@
 
 Docker configuration for a single-box home media server: Jellyfin plus the *arr
 stack and qBittorrent. The household reaches it on a public domain; the admin
-apps are Tailscale-only. Played on Apple TV via Infuse.
+apps are reachable only on the LAN or through a self-hosted WireGuard tunnel.
+Played on Apple TV via Infuse.
 
 Full requirements are in [`docs/spec.md`](docs/spec.md). This README is the
 operator's guide: how to bring it up, configure it in the right order, and grow
@@ -25,9 +26,9 @@ by hardlink instead of copying. Both download protocols land under that root
 (`torrents/` and `usenet/`, siblings of `media/`), so imports hardlink whichever
 one a release came from. Container config lives separately on the SSD
 under `/opt/mediaserver`. Caddy is the sole entry point from the internet and
-serves exactly three names — the landing page, Jellyfin and Jellyseerr; the six
-admin apps have no route through it and are reached at `<lan-ip>:<port>` over
-Tailscale (spec §5.1, decisions.md D25). The `/data` bind
+serves exactly three names — the landing page, Jellyfin and Jellyseerr; the
+seven admin apps have no route through it and are reached at `<lan-ip>:<port>`,
+on the LAN or over WireGuard (spec §5.1, decisions.md D25, D26). The `/data` bind
 mount is deliberate indirection: adding disks later means swapping it for a
 mergerfs pool with no container changes and no library rescan.
 
@@ -41,12 +42,18 @@ The target machine, per spec §1–§2:
 - BIOS: integrated graphics enabled and set as primary adapter, onboard WiFi
   disabled, **Restore on AC Power Loss: Power On**, Fast Boot disabled
 - Docker from Docker's official repository — not Debian's `docker.io`
-- Tailscale installed and joined to the tailnet (`tailscale up`) — this is how
-  you reach the admin apps from outside the house
+- No VPN client to install: remote administration is the `wg-easy` container in
+  this stack, which comes up with everything else
 - A domain, with A records for it plus `jellyfin.` and `seerr.` pointing at the
   WAN address
-- Router forwarding TCP **80 and 443** to the box's LAN address. Both: Let's
-  Encrypt validates over 80 and will not issue a certificate without it
+- Router forwarding to the box's LAN address:
+  - TCP **80 and 443** — both; Let's Encrypt validates over 80 and will not
+    issue a certificate without it
+  - UDP **`WG_PORT`** (51820) — the WireGuard tunnel. Never forward
+    `WG_UI_PORT`; the wg-easy admin UI is LAN and tunnel only
+- A DNS A record for `WG_HOST` as well, pointing at the WAN address. A name
+  rather than a bare IP, so a changed WAN address is one DNS edit instead of
+  reissuing every peer config
 
 Confirm the iGPU is alive before going further — `vainfo` must list H.264 and
 HEVC entrypoints. If `/dev/dri` does not exist, it is disabled in BIOS.
@@ -98,7 +105,10 @@ smartd, sets UFW rules, and prints the values you need for the next step.
 | `PUBLIC_DOMAIN` | your domain, e.g. `media.example.com` |
 | `ACME_EMAIL` | contact address for Let's Encrypt expiry warnings |
 | `ADMIN_HOST` | same LAN address — where the Manage links point |
+| `WG_UI_BIND` | same LAN address again — what the wg-easy UI binds to |
 | `LAN_SUBNET` | your home network, e.g. `192.168.1.0/24` |
+| `WG_HOST` | the name peers dial, e.g. `vpn.example.com` |
+| `WG_USER`, `WG_PASS` | wg-easy admin login. **First start only** — after that, change it in the UI |
 | `SMTP_*`, `ALERT_EMAIL` | your mail relay — without these SMART alerts go nowhere |
 | `USENET_USER`, `USENET_PASS` | your news server (Eweka etc). Blank = no Usenet downloads |
 | `NZBGEEK_API_KEY`, `NZBPLANET_API_KEY` | Usenet indexer keys, from each site's profile page |
@@ -109,7 +119,7 @@ silently publish everything on every interface.
 
 `LAN_SUBNET` matters more than it looks, in two directions. Leave it blank and
 the firewall blocks LAN clients from reaching Jellyfin, so Infuse on the Apple TV
-will not find it unless the Apple TV is on the tailnet. But leave it blank and
+will not find it unless the Apple TV is a WireGuard peer. But leave it blank and
 `setup.sh` also **skips the `DOCKER-USER` rules entirely** — and those are what
 actually keep the service ports off the internet, because plain UFW does not
 filter Docker-published ports. Re-run `sudo ./setup.sh --skip-packages` after
@@ -302,8 +312,8 @@ Request, and it appears.
 landing page — Watch and Request — and those two are the only things anyone else
 needs. No VPN, no app, no port to remember.
 
-The *Manage* section, with the six admin tools, renders **only for clients on the
-LAN or the tailnet**. That is a courtesy, not a control: those apps are
+The *Manage* section, with the seven admin tools, renders **only for clients on
+the LAN or the tunnel**. That is a courtesy, not a control: those apps are
 unreachable from the internet because they have no route in `caddy/sites.caddy`
 and no DNS record, not because a link is hidden.
 
@@ -313,10 +323,17 @@ it is live on save — there is no build step and no `docker compose restart`.
 
 ### 9b. Admin access from outside
 
-Join the box and your phone to the same tailnet, then browse to
-`http://<lan-ip>:8989` for Sonarr and so on. Nothing proxies them, so there is
-no hostname to remember and no certificate involved — over the tailnet the
-transport is encrypted by WireGuard.
+Open the wg-easy UI at `http://<lan-ip>:51821`, add a peer, scan the QR code
+with the WireGuard app. Then browse to `http://<lan-ip>:8989` for Sonarr and so
+on — **the same address you would use at home**. Nothing proxies them, so there
+is no hostname to remember and no certificate involved; the transport is
+encrypted by WireGuard.
+
+Peers get a split tunnel: only the LAN and the WireGuard subnet route through
+it, so ordinary browsing is unaffected and the tunnel is cheap enough to leave
+on permanently. That is what makes one address work in both places, which the
+landing page relies on — it templates a single `ADMIN_HOST` and cannot render a
+different link per network (decisions.md D26).
 
 This is why the admin apps do not need a public name, and why adding one would
 be a mistake: qBittorrent and SABnzbd both run arbitrary commands by design.
@@ -325,7 +342,8 @@ be a mistake: qBittorrent and SABnzbd both run arbitrary commands by design.
 
 Add Jellyfin as a source (not an SMB share — the Jellyfin source is what
 preserves watch state, resume position, and library sync across devices). For
-playback away from home, install Tailscale on the Apple TV.
+playback away from home, use the public `jellyfin.<domain>` name — the Apple TV
+needs no VPN client of its own.
 
 ### Naming
 
@@ -396,9 +414,11 @@ alerting path that has never been tested is not an alerting path.
 **Security posture**, restated because it is easy to erode:
 
 - Only 80 and 443 are forwarded, and Caddy answers on them for three names
-- The six admin apps have no route, no public DNS record, and no path through
+- The seven admin apps have no route, no public DNS record, and no path through
   `DOCKER-USER` — three independent reasons the internet cannot reach them
-- Admin access is Tailscale plus `<lan-ip>:<port>`
+- UDP `WG_PORT` is forwarded too, and answers nothing without a valid key. The
+  wg-easy admin UI on `WG_UI_PORT` is never forwarded
+- Admin access is WireGuard plus `<lan-ip>:<port>`
 - The *arr UIs, qBittorrent and SABnzbd are not built for hostile exposure and
   must never reach the internet. qBittorrent's external-program setting and
   SABnzbd's post-processing scripts are both arbitrary command execution
@@ -448,7 +468,7 @@ is not set to Anime.
 **The landing page shows no status dots, or a grey one.** The dots are probed by
 the browser, so they report what *your device* can reach, not what the box
 thinks. All of them missing means nothing was reachable — usually the client has
-dropped off the tailnet. A single grey one means that hostname is not answering:
+dropped off the VPN. A single grey one means that hostname is not answering:
 check it is still routed in `caddy/sites.caddy`. Note the dots cannot see a
 stopped container, because Caddy answers 502 and the probe cannot read the status
 (decisions.md D24) — they mean "answering", not "healthy".

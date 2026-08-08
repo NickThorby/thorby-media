@@ -302,9 +302,9 @@ services:
   # The public front door, and the only thing reachable from the internet. It
   # routes exactly three names — the landing page, Jellyfin and Jellyseerr.
   #
-  # The six admin apps are NOT proxied. They are reached at <lan-ip>:<port>, on
-  # the LAN or over Tailscale, so there is no public route to them to get wrong
-  # (decisions.md D25, spec §5.3).
+  # The seven admin apps are NOT proxied. They are reached at <lan-ip>:<port>,
+  # on the LAN or over WireGuard, so there is no public route to them to get
+  # wrong (decisions.md D25, D26, spec §5.3).
   caddy:
     image: caddy:alpine
     container_name: caddy
@@ -326,6 +326,7 @@ services:
       BAZARR_PORT: ${BAZARR_PORT:-6767}
       SAB_PORT: ${SAB_PORT:-8085}
       QBIT_PORT: ${QBIT_PORT:-8080}
+      WG_UI_PORT: ${WG_UI_PORT:-51821}
       # Relocated off Caddy's default /data. In this stack /data means the media
       # root in every container; having one container where it means something
       # else is exactly the ambiguity that causes mistakes later.
@@ -343,9 +344,10 @@ services:
       # this there is no record of who reached what. Also the input to the
       # fail2ban caddy-auth jail, so the format is load-bearing.
       - ${CONFIG_ROOT:-/opt/mediaserver}/caddy/logs:/var/log/caddy
-      # No tailscaled socket. It existed only to fetch *.ts.net certificates;
-      # those are gone, and with them the accepted risk that a Caddy compromise
-      # reached the tailnet control API (review-2026-08 S7, decisions.md D21).
+      # Caddy holds no credential for anything but ACME. It once mounted a
+      # tailscaled socket to fetch certificates, which meant an internet-facing
+      # container held a VPN control API; nothing replaced that under wg-easy
+      # and nothing should (review-2026-08 S7, decisions.md D21, D26).
     ports:
       # The LAN address the router forwards 80 and 443 to. A specific address,
       # never a wildcard — 0.0.0.0 here would collide with nothing today but
@@ -361,7 +363,77 @@ services:
       jellyseerr:
         condition: service_healthy
 
+  # ── Remote access ──────────────────────────────────────────────────────────
+  # The administrator's door. Peers dial WG_PORT/udp from anywhere and land on
+  # the LAN; the household never touches this and uses the public domain.
+  #
+  # Not to be confused with the Gluetun block below. That is an *outbound* VPN
+  # client for qBittorrent's traffic and is still deferred. This is an inbound
+  # remote-access server. They are unrelated and can coexist.
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy:15
+    container_name: wg-easy
+    restart: unless-stopped
+    logging: *logging
+    security_opt: *security
+    # Host networking, deliberately. wg0 is then a host interface, which buys
+    # two things nothing else does: a peer reaches <lan-ip>:<port> by the same
+    # address it uses at home, and setup.sh's firewall can match `-i wg0`
+    # exactly as it used to match the tailnet. On a bridge network wg0 lives in
+    # the container's namespace, peer traffic is masqueraded to the container's
+    # own address, and neither holds (decisions.md D26).
+    network_mode: host
+    cap_add:
+      # No SYS_MODULE. Upstream's reference compose adds it so the container can
+      # modprobe wireguard; it also lets a container load arbitrary kernel
+      # modules. The module is in-tree on Debian 13, so setup.sh loads it at
+      # boot and this stays off. If wg0 never appears, add it back first.
+      - NET_ADMIN
+    environment:
+      TZ: ${TZ:-Africa/Johannesburg}
+      # The admin UI listener. A specific address, never a wildcard — same
+      # reasoning as CADDY_BIND_ADDR. Still reachable from the tunnel: the LAN
+      # address is local to the box whichever interface the packet arrived on.
+      HOST: ${WG_UI_BIND:?WG_UI_BIND is unset — the LAN address of this box}
+      PORT: ${WG_UI_PORT:-51821}
+      # Plain HTTP, matching the other admin UIs: encrypted in transit by
+      # WireGuard, plaintext on the LAN, which was already true under §5.1.
+      # v15 refuses HTTP without this and serves a self-signed cert instead.
+      INSECURE: "true"
+      # Unattended setup. NOTE this applies on FIRST START ONLY — wg-easy v15
+      # keeps its config in a database, so unlike the *arrs these are not
+      # re-asserted on every start. audit-auth.sh is the compensating control
+      # (decisions.md D26, CLAUDE.md invariant 5).
+      #
+      # Do NOT add PASSWORD or PASSWORD_HASH. Those are v14 variables and v15
+      # refuses to start when it sees one, deliberately, to stop a v14 config
+      # being silently upgraded. validate.sh asserts their absence.
+      INIT_ENABLED: "true"
+      INIT_USERNAME: ${WG_USER:?WG_USER is unset — the wg-easy admin username}
+      INIT_PASSWORD: ${WG_PASS:?WG_PASS is unset — the wg-easy admin password}
+      INIT_HOST: ${WG_HOST:?WG_HOST is unset — the name peers dial in on}
+      INIT_PORT: ${WG_PORT:-51820}
+      INIT_DNS: ${WG_DNS:-1.1.1.1}
+      # v4 and v6 are one group in wg-easy and must be set together, which is
+      # why a v6 range appears in an otherwise v4-only stack.
+      INIT_IPV4_CIDR: ${WG_SUBNET:-10.8.0.0/24}
+      INIT_IPV6_CIDR: ${WG_SUBNET6:-fdcc:ad94:bacf:61a3::/64}
+      # Split tunnel: the LAN and the tunnel itself, nothing else. Ordinary
+      # browsing stays off the tunnel, so a peer can leave WireGuard always-on
+      # and home addresses simply resolve wherever they are.
+      INIT_ALLOWED_IPS: ${LAN_SUBNET:?LAN_SUBNET is unset — wg peers need a route to the LAN},${WG_SUBNET:-10.8.0.0/24}
+    volumes:
+      - ${CONFIG_ROOT:-/opt/mediaserver}/wg-easy:/etc/wireguard
+      - /lib/modules:/lib/modules:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wg show wg0 >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
   # ── VPN gateway — deferred, spec §7 ────────────────────────────────────────
+  # An OUTBOUND VPN client for qBittorrent, unrelated to wg-easy above.
   # Commented out until a provider with working port forwarding is chosen.
   # Port forwarding is the deciding feature; without it inbound peers fail and
   # seeding degrades badly. Mullvad and IVPN have both dropped it and are

@@ -12,9 +12,12 @@
 #     is common forum advice and is actively dangerous in this stack: Caddy
 #     reaches the backends over the compose bridge, so every proxied request has
 #     a private 172.x source address and would skip authentication entirely.
-#     The tailnet-facing admin UIs become anonymous-admin while remote access
-#     carries on working perfectly. Verified: with that setting, GET / returns
-#     200 with no login.
+#     The admin UIs become anonymous-admin while remote access carries on
+#     working perfectly. Verified: with that setting, GET / returns 200 with no
+#     login.
+#   - wg-easy configures itself from INIT_* on first start only, so unlike the
+#     *arrs its authentication is not re-asserted every time it comes up. This
+#     script is the compensating control (decisions.md D26).
 #   - qBittorrent's "run external program on completion" is arbitrary command
 #     execution by design (spec §5.3). provision.sh blanks it, and a UI edit can
 #     put it straight back.
@@ -350,6 +353,60 @@ else
     bad "Jellyseerr: GET / returned 200 without a login"
   else
     ok "Jellyseerr: GET / redirects an anonymous request to the login page"
+  fi
+fi
+
+# ─── wg-easy ─────────────────────────────────────────────────────────────────
+#
+# This check carries more weight than the others. The *arrs re-apply their auth
+# configuration from the environment on every start, so a wiped config recovers
+# itself. wg-easy v15 does not: INIT_* runs once, on first start, and after that
+# the credentials live in its database. Lose /etc/wireguard — a bad restore, a
+# `docker compose down -v`, a new CONFIG_ROOT — and the container comes back
+# with INIT_* re-applied if the variables are still set, or an open setup wizard
+# if they are not. Either way nothing but this check would tell you.
+#
+# The stakes: an unauthenticated wg-easy admin can mint a peer, and a peer is on
+# the LAN (decisions.md D26).
+
+echo
+echo "wg-easy"
+
+if ! up wg-easy; then
+  skip "wg-easy is not running"
+else
+  WG_URL="http://127.0.0.1:${WG_UI_PORT:-51821}"
+
+  # v15 answers the session endpoint 401 when unauthenticated. If a future
+  # version moves it, this reports 000/404 and fails loudly rather than passing
+  # by accident — which is the right direction for an auth check to break in.
+  sess=$(code "$WG_URL/api/session")
+  case "$sess" in
+    401|403)
+      ok "wg-easy: the session endpoint requires authentication" ;;
+    200)
+      bad "wg-easy: GET /api/session returned 200 — the UI has an open session"
+      note "Anyone who can reach ${WG_UI_BIND:-<lan-ip>}:${WG_UI_PORT:-51821} can add a VPN peer." ;;
+    000)
+      bad "wg-easy: no answer on ${WG_UI_PORT:-51821} — is INSECURE=true set?"
+      note "v15 serves HTTPS unless told otherwise; this probe speaks plain HTTP." ;;
+    *)
+      bad "wg-easy: GET /api/session returned $sess, expected 401"
+      note "Confirm the endpoint against the running version before trusting this." ;;
+  esac
+
+  # The setup wizard is the failure mode that matters. If it is reachable, the
+  # database is empty and the next visitor becomes the VPN administrator.
+  if [[ "$(code "$WG_URL/api/setup")" == "404" ]]; then
+    ok "wg-easy: no setup wizard is exposed"
+  else
+    warn_setup=$(code "$WG_URL/api/setup")
+    if [[ "$warn_setup" == "200" ]]; then
+      bad "wg-easy: the setup wizard is OPEN — /etc/wireguard has been lost"
+      note "The first visitor becomes the VPN admin. Stop the container now."
+    else
+      ok "wg-easy: setup endpoint returns $warn_setup, not an open wizard"
+    fi
   fi
 fi
 

@@ -31,7 +31,7 @@
      "this app is healthy" (decisions.md D24).
 
      What it does catch: a route that has drifted out of sites.caddy, a client
-     that has dropped off the tailnet, and broken MagicDNS.
+     that has dropped off the VPN, and a stale DNS answer.
 
      Each failure logs a network error in devtools. That is unavoidable with
      fetch and does not mean the page is broken. */
@@ -56,7 +56,7 @@
     const up = await Promise.all(links.map((el) => probe(el.href)));
 
     // If nothing in the group answered, the instrument itself is not working —
-    // no tailnet, an untrusted dev certificate, an offline client — so report
+    // no VPN, an untrusted certificate, an offline client — so report
     // nothing rather than painting a wall of grey that blames the services.
     if (!up.some(Boolean)) {
       container.dataset.probes = 'unreliable';
@@ -76,7 +76,7 @@
   // saves six cross-origin requests on the household visits that never do.
   //
   // Guarded because the drawer is absent entirely for clients off the LAN and
-  // off the tailnet — Caddy templates it out. Without the guard this throws and
+  // off the tunnel — Caddy templates it out. Without the guard this throws and
   // takes the spotlight code below with it, on the one page that must never
   // look broken.
   const manage = document.querySelector('.manage');
