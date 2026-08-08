@@ -424,7 +424,7 @@ provision_jellyseerr() {
   # Look the profile up by name rather than hardcoding an id — Recyclarr creates
   # these, and the id depends on what order things happened in.
   local rprofile sprofile rid sid
-  rprofile=${SEERR_RADARR_PROFILE:-"[SQP] SQP-1 (2160p)"}
+  rprofile=${SEERR_RADARR_PROFILE:-"UHD-2160p"}
   sprofile=${SEERR_SONARR_PROFILE:-"WEB-1080p"}
   rid=$(arr GET "$RADARR_URL" "$RADARR_API_KEY" /api/v3/qualityprofile \
         | jq -r --arg n "$rprofile" '.[] | select(.name == $n) | .id')

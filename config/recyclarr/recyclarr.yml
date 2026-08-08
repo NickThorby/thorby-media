@@ -62,7 +62,14 @@ radarr:
     quality_profiles:
       # SQP-1 (2160p): good 4K encodes, remuxes and BR-DISK excluded.
       # Roughly 15-30 GB a film rather than 60-90.
+      #
+      # Renamed from the template's "[SQP] SQP-1 (2160p)", which is the only
+      # entry in Radarr's profile dropdown that does not look like the others.
+      # UHD-2160p matches the built-in HD-720p / HD-1080p pattern and does not
+      # collide with Radarr's own Ultra-HD. Whatever this says must match
+      # SEERR_RADARR_PROFILE in .env — Jellyseerr selects the profile by name.
       - trash_id: 5128baeb2b081b72126bc8482b2a86a0 # [SQP] SQP-1 (2160p)
+        name: UHD-2160p
         reset_unmatched_scores:
           enabled: true
 
