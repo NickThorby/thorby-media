@@ -63,6 +63,14 @@ radarr:
       # SQP-1 (2160p): good 4K encodes, remuxes and BR-DISK excluded.
       # Roughly 15-30 GB a film rather than 60-90.
       #
+      # Sized for the 10 TB disk this build is planned around. On the temporary
+      # 2 TB (spec §3.2) that is only ~65-130 films before the disk is full, and
+      # nothing in this stack warns you as it fills: there is no free-space
+      # floor in SABnzbd, no seed-ratio limit in qBittorrent, and
+      # `preallocate_all` is on. Left at 2160p deliberately — watch `df -h /data`
+      # until the bigger drive lands, or drop this to a 1080p profile, which
+      # also means updating SEERR_RADARR_PROFILE in .env (decisions.md D27).
+      #
       # Renamed from the template's "[SQP] SQP-1 (2160p)", which is the only
       # entry in Radarr's profile dropdown that does not look like the others.
       # UHD-2160p matches the built-in HD-720p / HD-1080p pattern and does not

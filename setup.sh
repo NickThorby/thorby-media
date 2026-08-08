@@ -449,7 +449,9 @@ format_disk() {
     die "$DISK_DEV is currently mounted. Unmount it before formatting."
   fi
 
-  # -m 0: the default 5% root reserve would waste ~400 GB on an 8 TB disk and
+  # -m 0: the default 5% root reserve is meant for a system disk that must not
+  # fill; on a pure data disk it just disappears — ~100 GB on 2 TB, ~500 GB on
+  # 10 TB. Nothing on this filesystem needs root headroom, and
   # serves no purpose on a data-only filesystem (spec §3.2).
   run mkfs.ext4 -m 0 -L media1 "$DISK_DEV"
   ok "formatted $DISK_DEV as ext4 with no root reserve"

@@ -490,7 +490,7 @@ The household needs to watch and request without installing anything, so
 Jellyfin and Jellyseerr go on a real domain with the router forwarding 80 and
 443. The six admin apps must not follow them there — spec §5.3 is right that
 qBittorrent's completion program and SABnzbd's post-processing are arbitrary
-command execution, and a session on either is a shell on a box holding 8 TB.
+command execution, and a session on either is a shell on the box.
 
 This reverses the "nothing is exposed" half of D1 and invariant 4. It does not
 reverse §5.3, and the work here is making that difference mechanical.
@@ -622,6 +622,35 @@ has been added, since every v14-era tutorial tells you to add one.
 443 and the WireGuard port), D10, D13, D19 (`-i wg0`), D21 and Q1/Q2 (moot for a
 second time — there is no hosted control plane left to hold a socket for), and
 the Tailscale half of D25.
+
+### D27. The media disk is a temporary 2 TB; rebuild on the swap
+
+The 8 TB in §1's original hardware table was never bought. The build starts on a
+2 TB drive while a 10 TB is saved for, and the plan when it arrives is to
+**replace and rebuild from this repo**, not migrate in place.
+
+That is the right trade only because of the §3.1 bind mount. `/data` is an
+indirection over `/mnt/disk1`, so no container, no *arr root folder and no
+Jellyfin library path contains a capacity assumption or a device name — the disk
+is a mount, and swapping it is a mount-point change. Rebuilding is then cheaper
+than a careful migration while the library is small enough to re-acquire, and it
+also exercises `setup.sh` end to end a second time, which is worth having.
+
+Documentation was updated to say 2 TB; **behaviour was deliberately not
+changed.** In particular the Radarr profile stays on `UHD-2160p` at 15–30 GB a
+film, which is roughly 65–130 films before the disk is full.
+
+**What that leaves unguarded, stated plainly so it is not mistaken for an
+oversight:** there is no SABnzbd `download_free`/`complete_free` floor, no
+qBittorrent seed-ratio or seed-time limit, `preallocate_all` is on
+(`provision.sh`), and there is no free-space alerting anywhere — `smartd` covers
+drive health, not capacity. The disk can therefore fill silently, and the first
+symptom will be imports failing. `df -h /data` is the manual control until the
+10 TB lands.
+
+Revisit if the 2 TB turns out to be in use for longer than a few months: a
+free-space floor in SABnzbd and a seed-ratio limit in qBittorrent are the two
+cheapest fixes and would both survive the swap.
 
 ---
 

@@ -25,7 +25,7 @@ until the box was built and was removed with it.
 | OS | Debian 13 (Trixie), minimal server |
 | Docker | docker-ce from Docker's official repo |
 | CPU | Intel i7-8700K, Quick Sync iGPU |
-| Media disk | 8 TB ext4 at `/mnt/disk1`, bind-mounted to `/data` |
+| Media disk | 2 TB ext4 at `/mnt/disk1`, bind-mounted to `/data` — temporary, 10 TB planned |
 | Access | public 80/443 for three names; WireGuard (`wg-easy`) for admin |
 
 The scripts assume Debian: bash 5, GNU coreutils, `systemd`, `ufw`, and a Docker

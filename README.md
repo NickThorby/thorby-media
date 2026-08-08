@@ -19,7 +19,8 @@ it later.
 
 ## The design in one paragraph
 
-An 8 TB ext4 disk is mounted at `/mnt/disk1` and bind-mounted to `/data`. Every
+An ext4 disk is mounted at `/mnt/disk1` and bind-mounted to `/data` — currently
+a temporary 2 TB, see spec §3.2. Every
 container mounts `/data:/data` — the same path on both sides, no exceptions —
 so that downloads and the library sit on one filesystem and Sonarr/Radarr import
 by hardlink instead of copying. Both download protocols land under that root
