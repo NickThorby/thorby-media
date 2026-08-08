@@ -1,36 +1,122 @@
-/* Thorby Media — landing page.
-   No build step, no framework, no external requests. Served straight out of
-   the Caddy container that already fronts the stack. */
+/* The Thorby Media Server — landing page.
+
+   No build step, no framework, no external requests. Every icon is an inline
+   <symbol> in index.html and the type is the system stack, so the page renders
+   in full for a tailnet client with no route to the internet — which is the
+   whole point, not a stylistic preference (decisions.md D17, D24).
+
+   Served straight out of the Caddy container that already fronts the stack. */
+
+/* ── Tokens ─────────────────────────────────────────────────────────────────
+   Three tiers. Primitives never appear outside this block; components only
+   ever read the semantic names, and the light override remaps the semantics
+   alone. That is what keeps the two themes in step — the old file redeclared
+   nine unrelated values and drifted. */
 
 :root {
-  --bg: #0e1014;
-  --bg-glow-a: #1b2942;
-  --bg-glow-b: #241b33;
-  --surface: #171a21;
-  --surface-hi: #1e222b;
-  --line: #272c37;
-  --text: #eef1f6;
-  --muted: #99a1b3;
-  --watch: #7aa2ff;
-  --request: #6ee7b7;
-  --radius: 18px;
+  color-scheme: dark light;
+
+  /* Neutrals */
+  --ink-1000: #07080b;
+  --ink-900:  #0b0d12;
+  --ink-850:  #101319;
+  --ink-800:  #151922;
+  --ink-700:  #1b2029;
+  --ink-600:  #242a36;
+  --ink-500:  #333b4a;
+  --ink-300:  #8b93a5;
+  --ink-200:  #b5bccb;
+  --ink-100:  #dfe3ec;
+  --ink-0:    #fff;
+
+  --accent:   #7aa2ff;
+  --accent-2: #8d61eb;
+  --ok:       #3ecf8e;
+
+  /* Service marks, taken from the logos themselves. Bazarr's is a neutral
+     because Bazarr genuinely has no brand colour — its logo is black and white
+     only — so this is not an omission to be helpfully corrected later.
+     These are decorative: plate tints, glows, dot rings. Never text, and never
+     a border that carries meaning; #ffc230 and #00ccff both fail contrast. */
+  --b-jellyfin: #00a4dc;
+  --b-seerr:    #8d61eb;
+  --b-sonarr:   #00ccff;
+  --b-radarr:   #ffc230;
+  --b-prowlarr: #e66001;
+  --b-bazarr:   #c9cfdb;
+  --b-sab:      #ffb300;
+  --b-qbit:     #72b4f5;
+
+  /* Space — 4px base */
+  --s-1: .25rem;  --s-2: .5rem;  --s-3: .75rem; --s-4: 1rem;
+  --s-5: 1.5rem;  --s-6: 2rem;   --s-7: 3rem;   --s-8: 4rem;
+
+  /* Radius */
+  --r-xs: 8px; --r-sm: 12px; --r-md: 16px;
+  --r-lg: 22px; --r-xl: 28px; --r-full: 999px;
+
+  /* Type. One family: weight, tracking and optical size do the work that a
+     second face would. Weights are snapped to the four real ones — the old
+     file asked for 680/640/550, which only resolved because SF Pro is variable
+     and snapped unpredictably on Windows and Android. */
+  --font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+          "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --t-xs: .75rem;  --t-sm: .8125rem; --t-md: .9375rem; --t-lg: 1.0625rem;
+  --t-xl: clamp(1.1rem, 3.4vw, 1.35rem);
+  --t-display: clamp(1.85rem, 6.4vw, 3rem);
+  --tr-tight: -.035em; --tr-snug: -.015em; --tr-wide: .09em;
+
+  /* Motion */
+  --dur-1: 140ms; --dur-2: 280ms; --dur-3: 520ms;
   --ease: cubic-bezier(.22, 1, .36, 1);
+  --ease-io: cubic-bezier(.4, 0, .2, 1);
+
+  /* Elevation */
+  --e-1: 0 1px 2px rgb(0 0 0 / .28);
+  --e-2: 0 10px 28px -14px rgb(0 0 0 / .55), 0 1px 2px rgb(0 0 0 / .3);
+  --e-3: 0 26px 60px -28px rgb(0 0 0 / .7);
+
+  /* Semantics — dark */
+  --bg: var(--ink-900);
+  --mesh-a: #1b2942;
+  --mesh-b: #2a1c3c;
+  --mesh-c: #0d2b32;
+  --surface:    color-mix(in oklab, var(--ink-800) 76%, transparent);
+  --surface-hi: color-mix(in oklab, var(--ink-700) 88%, transparent);
+  --border:     color-mix(in oklab, var(--ink-0) 8%, transparent);
+  --border-hi:  color-mix(in oklab, var(--ink-0) 17%, transparent);
+  --text: var(--ink-100);
+  --text-muted: var(--ink-300);
+  --focus: #8ab4ff;
+  --grain: .04;
+
+  /* The one semantic the light theme does NOT remap. Every mark sits on this,
+     and it has to stay dark in both themes: Sonarr's outer ring is #eee and
+     Radarr's body is white, so on a light surface they would simply vanish.
+     Holding it constant also turns eight unrelated silhouettes — circles,
+     chevrons, an arrow, an illustrated ferret — into eight identical rounded
+     squares, which is most of what makes the set look like one page. */
+  --plate: #0c0f15;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f5f6f9;
-    --bg-glow-a: #dde6fb;
-    --bg-glow-b: #e8e0f7;
-    --surface: #ffffff;
-    --surface-hi: #ffffff;
-    --line: #e2e5ec;
+    --bg: #f4f6fa;
+    --mesh-a: #dde6fb;
+    --mesh-b: #ece2f8;
+    --mesh-c: #dff0f2;
+    --surface:    color-mix(in oklab, #fff 88%, transparent);
+    --surface-hi: #fff;
+    --border:     color-mix(in oklab, var(--ink-900) 9%, transparent);
+    --border-hi:  color-mix(in oklab, var(--ink-900) 18%, transparent);
     --text: #131720;
-    --muted: #5d6577;
-    --watch: #2f5fd8;
-    --request: #0d9b74;
+    --text-muted: #59617a;
+    --focus: #2f5fd8;
+    --grain: .055;
   }
 }
+
+/* ── Base ───────────────────────────────────────────────────────────────── */
 
 * { box-sizing: border-box; }
 
@@ -39,65 +125,185 @@ body {
   min-height: 100dvh;
   display: grid;
   place-items: center;
-  padding: 6vh 1.25rem;
-  background:
-    radial-gradient(60rem 40rem at 15% -10%, var(--bg-glow-a), transparent 60%),
-    radial-gradient(50rem 35rem at 110% 15%, var(--bg-glow-b), transparent 55%),
-    var(--bg);
+  /* env() keeps the page clear of the notch and the home indicator; household
+     phones are the main way this page gets opened. */
+  padding: max(5vh, calc(env(safe-area-inset-top) + var(--s-5))) var(--s-4)
+           max(5vh, calc(env(safe-area-inset-bottom) + var(--s-5)));
+  background: var(--bg);
   color: var(--text);
-  font: 16px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
-        Roboto, Helvetica, Arial, sans-serif;
+  font: 400 16px/1.5 var(--font);
+  font-synthesis: none;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
 }
 
-main { width: min(46rem, 100%); }
+a { touch-action: manipulation; }
 
-/* ── Header ─────────────────────────────────────────────────────────────── */
+/* Screen-reader-only. Carries the status text the coloured dots cannot. */
+.vh {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
-.head { text-align: center; margin-bottom: clamp(1.75rem, 5vw, 2.75rem); }
+/* The sprite must be hidden without `display: none`, which stops some engines
+   resolving the gradient references inside a <use> shadow tree. */
+.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
 
-.head h1 {
+/* ── Backdrop ───────────────────────────────────────────────────────────────
+   Fixed rather than painted on <body> so it cannot smear when the page
+   overflows on a short phone viewport. */
+
+.bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(62rem 42rem at 12% -12%, var(--mesh-a), transparent 62%),
+    radial-gradient(52rem 36rem at 112% 8%,  var(--mesh-b), transparent 58%),
+    radial-gradient(46rem 40rem at 50% 118%, var(--mesh-c), transparent 60%),
+    var(--bg);
+}
+
+/* Grain, as an SVG filter in a data URI — no request, ~300 bytes, and it is
+   what stops the gradients above reading as flat banded washes. */
+.bg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: var(--grain);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.shell { width: min(48rem, 100%); }
+
+/* ── Masthead ───────────────────────────────────────────────────────────── */
+
+.masthead {
+  display: grid;
+  justify-items: center;
+  gap: var(--s-3);
+  text-align: center;
+  margin-bottom: clamp(var(--s-6), 6vw, var(--s-7));
+}
+
+.mark {
+  width: 3.25rem;
+  aspect-ratio: 1;
+  display: block;
+  filter: drop-shadow(0 6px 18px color-mix(in oklab, var(--accent) 30%, transparent));
+}
+
+.masthead h1 {
   margin: 0;
-  font-size: clamp(2rem, 7vw, 3rem);
-  font-weight: 680;
-  letter-spacing: -.03em;
+  font-size: var(--t-display);
+  font-weight: 700;
+  letter-spacing: var(--tr-tight);
+  line-height: 1.08;
+  text-wrap: balance;
+  font-optical-sizing: auto;
+  color: var(--text-muted);
 }
 
-.sub { margin: .4rem 0 0; color: var(--muted); font-size: clamp(.95rem, 2.5vw, 1.05rem); }
+/* The name is the only gradient text on the page — it gives the lock-up a
+   display treatment without a second typeface. Guarded, because an unsupported
+   background-clip plus transparent fill is invisible text, not a fallback. */
+.masthead h1 .name { color: var(--text); }
+
+@supports (background-clip: text) or (-webkit-background-clip: text) {
+  .masthead h1 .name {
+    background: linear-gradient(100deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+}
+
+.masthead .sub {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--t-lg);
+}
+
+/* ── Service marks ──────────────────────────────────────────────────────────
+   Everything below keys off the data-sub attribute the links already carry for
+   URL building, so there is one list of service names in the markup, not two.
+
+   --icon-scale is optical sizing: equal boxes are not equal visual mass. Six of
+   the eight marks are full-bleed discs and set the baseline. Jellyfin's chevron
+   and SABnzbd's arrow taper to a point, so at the same box they read lighter
+   than a disc and get nudged up. Tuned by eye at 96px, 56px and 34px. */
+
+.plate {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border-radius: var(--r-md);
+  background: color-mix(in oklab, var(--brand, var(--ink-500)) 14%, var(--plate));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--brand, var(--ink-500)) 22%, transparent),
+    var(--e-1);
+  transition: transform var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
+}
+
+.plate svg {
+  width: 58%;
+  height: 58%;
+  transform: scale(var(--icon-scale, 1));
+}
+
+[data-sub="jellyfin"] { --brand: var(--b-jellyfin); --icon-scale: 1.06; }
+[data-sub="seerr"]    { --brand: var(--b-seerr); }
+[data-sub="sonarr"]   { --brand: var(--b-sonarr); }
+[data-sub="radarr"]   { --brand: var(--b-radarr); }
+[data-sub="prowlarr"] { --brand: var(--b-prowlarr); }
+[data-sub="bazarr"]   { --brand: var(--b-bazarr); }
+[data-sub="sab"]      { --brand: var(--b-sab);      --icon-scale: 1.05; }
+[data-sub="qbit"]     { --brand: var(--b-qbit); }
 
 /* ── The two tiles ──────────────────────────────────────────────────────── */
 
-.tiles { display: grid; gap: 1rem; }
+.tiles { display: grid; gap: var(--s-3); }
 
 .tile {
-  --accent: var(--watch);
   position: relative;
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto 1fr auto auto;
   align-items: center;
-  gap: 1.1rem;
-  padding: clamp(1.15rem, 4vw, 1.6rem);
+  gap: var(--s-4);
+  padding: clamp(var(--s-4), 4vw, var(--s-5));
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
   background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  text-decoration: none;
+  /* Glass on the two hero tiles only. Eight blurred surfaces is a measurable
+     scroll cost on an older phone and buys nothing on a chip that size. */
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  box-shadow: var(--e-2);
   color: inherit;
+  text-decoration: none;
   overflow: hidden;
-  transition: transform .35s var(--ease), border-color .35s var(--ease),
-              background .35s var(--ease), box-shadow .35s var(--ease);
+  transition: transform var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease),
+              background var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
 }
 
-.tile--request { --accent: var(--request); }
-
-/* A wash of the accent that grows on hover. Kept behind the content. */
+/* A brand-tinted spotlight that follows the pointer. --mx/--my are set by
+   app.js; the defaults mean it still looks deliberate on touch, where there is
+   no pointer to track. */
 .tile::before {
   content: "";
   position: absolute;
   inset: 0;
-  background: radial-gradient(22rem 12rem at 0% 50%,
-              color-mix(in oklab, var(--accent) 16%, transparent), transparent 70%);
+  background: radial-gradient(26rem 16rem at var(--mx, 12%) var(--my, 50%),
+              color-mix(in oklab, var(--brand) 20%, transparent), transparent 72%);
   opacity: 0;
-  transition: opacity .35s var(--ease);
+  transition: opacity var(--dur-2) var(--ease);
+  pointer-events: none;
 }
 
 .tile > * { position: relative; }
@@ -106,96 +312,170 @@ main { width: min(46rem, 100%); }
 .tile:focus-visible {
   transform: translateY(-3px);
   background: var(--surface-hi);
-  border-color: color-mix(in oklab, var(--accent) 45%, var(--line));
-  box-shadow: 0 14px 34px -18px color-mix(in oklab, var(--accent) 70%, transparent);
+  border-color: color-mix(in oklab, var(--brand) 40%, var(--border-hi));
+  box-shadow: var(--e-3),
+              0 0 0 1px color-mix(in oklab, var(--brand) 18%, transparent);
 }
 
 .tile:hover::before,
 .tile:focus-visible::before { opacity: 1; }
 
-.tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .tile:active { transform: translateY(-1px); }
 
-.tile__icon {
-  display: grid;
-  place-items: center;
-  width: clamp(2.9rem, 11vw, 3.4rem);
+.tile .plate {
+  width: clamp(3rem, 12vw, 3.5rem);
   aspect-ratio: 1;
-  border-radius: 14px;
-  color: var(--accent);
-  background: color-mix(in oklab, var(--accent) 14%, transparent);
-  transition: transform .35s var(--ease);
 }
 
-.tile__icon svg { width: 55%; }
-.tile:hover .tile__icon { transform: scale(1.06) rotate(-3deg); }
+.tile:hover .plate {
+  transform: scale(1.05) rotate(-2deg);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--brand) 40%, transparent),
+    0 8px 22px -10px color-mix(in oklab, var(--brand) 60%, transparent);
+}
 
-.tile__text { display: grid; gap: .15rem; min-width: 0; }
-.tile__title { font-size: clamp(1.15rem, 4vw, 1.4rem); font-weight: 640; letter-spacing: -.015em; }
-.tile__desc { color: var(--muted); font-size: clamp(.85rem, 2.6vw, .95rem); }
+.tile__text { display: grid; gap: 2px; min-width: 0; }
 
-.tile__arrow { color: var(--muted); transition: transform .35s var(--ease), color .35s var(--ease); }
-.tile__arrow svg { width: 1.3rem; display: block; }
-.tile:hover .tile__arrow { transform: translateX(4px); color: var(--accent); }
+.tile__title {
+  font-size: var(--t-xl);
+  font-weight: 600;
+  letter-spacing: var(--tr-snug);
+}
+
+.tile__desc {
+  color: var(--text-muted);
+  font-size: var(--t-md);
+}
+
+.tile__arrow {
+  color: var(--text-muted);
+  transition: transform var(--dur-2) var(--ease), color var(--dur-2) var(--ease);
+}
+
+.tile__arrow svg { display: block; width: 1.35rem; height: 1.35rem; }
+.tile:hover .tile__arrow { transform: translateX(4px); color: var(--brand); }
 
 /* ── Manage disclosure ──────────────────────────────────────────────────── */
 
-.manage { margin-top: 1.5rem; }
+.manage { margin-top: var(--s-5); }
 
 .manage summary {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: .4rem;
-  padding: .6rem;
-  color: var(--muted);
-  font-size: .9rem;
+  gap: var(--s-2);
+  /* 44px minimum target — this is a real tap target on a phone, not a label. */
+  min-height: 44px;
+  padding: var(--s-2) var(--s-4);
+  border-radius: var(--r-full);
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: var(--tr-wide);
+  text-transform: uppercase;
   cursor: pointer;
   list-style: none;
-  border-radius: 999px;
-  transition: color .25s var(--ease);
+  transition: color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
 }
 
 .manage summary::-webkit-details-marker { display: none; }
-.manage summary:hover { color: var(--text); }
-.manage summary:focus-visible { outline: 2px solid var(--watch); outline-offset: 2px; }
 
-.manage__chev svg { width: 1rem; display: block; transition: transform .3s var(--ease); }
+.manage summary:hover {
+  color: var(--text);
+  background: color-mix(in oklab, var(--text) 6%, transparent);
+}
+
+.manage__chev svg {
+  display: block;
+  width: 1rem; height: 1rem;
+  transition: transform var(--dur-2) var(--ease);
+}
+
 .manage[open] .manage__chev svg { transform: rotate(180deg); }
 
 .admin {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
-  gap: .55rem;
-  padding-top: .5rem;
+  /* 13rem lands on three columns at the 48rem shell, so six tools fill two
+     even rows. Narrower tracks give four-then-two, which reads as a mistake. */
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: var(--s-2);
+  padding-top: var(--s-3);
 }
 
 .chip {
   display: grid;
-  gap: .1rem;
-  padding: .7rem .85rem;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: 44px;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 12px;
   color: var(--text);
   text-decoration: none;
-  font-size: .9rem;
-  font-weight: 550;
-  transition: transform .25s var(--ease), border-color .25s var(--ease),
-              background .25s var(--ease);
+  transition: transform var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
+              background var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
 }
 
-.chip em { font-style: normal; color: var(--muted); font-size: .78rem; font-weight: 400; }
-.chip:hover { transform: translateY(-2px); background: var(--surface-hi); border-color: #3a4152; }
-.chip:focus-visible { outline: 2px solid var(--watch); outline-offset: 2px; }
+.chip .plate { width: 2.15rem; aspect-ratio: 1; border-radius: var(--r-xs); }
+.chip .plate svg { width: 68%; height: 68%; }
 
-.chip__dot { width: .45rem; height: .45rem; border-radius: 50%; background: var(--muted); }
-.chip__dot[data-c="1"] { background: #6ea8fe; }
-.chip__dot[data-c="2"] { background: #f6c177; }
-.chip__dot[data-c="3"] { background: #c4a3ff; }
-.chip__dot[data-c="4"] { background: #6ee7b7; }
-.chip__dot[data-c="5"] { background: #f79bb5; }
-.chip__dot[data-c="6"] { background: #7fd4e8; }
+.chip__text { display: grid; min-width: 0; }
+
+/* min-width: 0 alone does not let these shrink — an unbreakable word like
+   "qBittorrent" still contributes its full width to the track and shoves the
+   status dot off the chip. overflow is what collapses that contribution. */
+.chip__name, .chip__desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip__name { font-size: var(--t-sm); font-weight: 600; letter-spacing: var(--tr-snug); }
+.chip__desc { font-size: var(--t-xs); color: var(--text-muted); }
+
+.chip:hover {
+  transform: translateY(-2px);
+  background: var(--surface-hi);
+  border-color: color-mix(in oklab, var(--brand) 40%, var(--border-hi));
+  box-shadow: var(--e-2);
+}
+
+/* ── Status dots ────────────────────────────────────────────────────────────
+   Two appearances for three states, on purpose. "up" is the only one with
+   colour; "down" is drawn exactly like "unknown", because the probe cannot
+   tell a broken service from an untrusted certificate from a client that is
+   not on the tailnet. A red dot on the household's home page would generate a
+   support call for a problem that does not exist. The distinction that matters
+   is carried in the visually-hidden text next to it (D24). */
+
+.dot {
+  width: .5rem;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px color-mix(in oklab, var(--text-muted) 60%, transparent);
+  transition: background var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
+}
+
+.dot[data-state="up"] {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ok) 20%, transparent);
+}
+
+/* If every probe in a group failed, the instrument is not working — most
+   likely nothing is reachable at all — so stop reporting its output rather
+   than showing a wall of grey. app.js sets this. */
+[data-probes="unreliable"] .dot { display: none; }
+
+/* ── Focus ──────────────────────────────────────────────────────────────── */
+
+.tile:focus-visible,
+.chip:focus-visible,
+.manage summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
 
 /* ── Motion ─────────────────────────────────────────────────────────────── */
 
@@ -204,13 +484,13 @@ main { width: min(46rem, 100%); }
   to   { opacity: 1; transform: none; }
 }
 
-.head, .tile, .manage { animation: rise .55s var(--ease) backwards; }
-.head              { animation-delay: .02s; }
+.masthead, .tile, .manage { animation: rise var(--dur-3) var(--ease) backwards; }
+.masthead          { animation-delay: .02s; }
 .tile:nth-child(1) { animation-delay: .10s; }
 .tile:nth-child(2) { animation-delay: .17s; }
 .manage            { animation-delay: .26s; }
 
-.admin .chip { animation: rise .4s var(--ease) backwards; }
+.admin .chip { animation: rise var(--dur-2) var(--ease) backwards; }
 .admin .chip:nth-child(1) { animation-delay: .02s; }
 .admin .chip:nth-child(2) { animation-delay: .05s; }
 .admin .chip:nth-child(3) { animation-delay: .08s; }
@@ -225,13 +505,22 @@ main { width: min(46rem, 100%); }
     animation: none !important;
     transition-duration: .01ms !important;
   }
-  .tile:hover, .chip:hover { transform: none; }
+  .tile:hover, .chip:hover, .tile:hover .plate { transform: none; }
 }
 
 /* ── Narrow screens ─────────────────────────────────────────────────────── */
 
-@media (max-width: 26rem) {
-  .tile { grid-template-columns: auto 1fr; row-gap: .1rem; }
+@media (max-width: 30rem) {
+  .tile {
+    grid-template-columns: auto 1fr auto;
+    gap: var(--s-3);
+  }
+  /* The whole row is the target on a phone; the affordance is redundant. */
   .tile__arrow { display: none; }
   .admin { grid-template-columns: 1fr 1fr; }
+}
+
+/* Two chip columns stop fitting a name and a dot somewhere around here. */
+@media (max-width: 22rem) {
+  .admin { grid-template-columns: 1fr; }
 }

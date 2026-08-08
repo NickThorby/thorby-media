@@ -60,6 +60,26 @@ are built from `location.host` at runtime, so they resolve to
 `https://sonarr.localhost:8443` here and `https://sonarr.<host>.ts.net` on the
 target, with no templating and no per-environment copy of the file.
 
+`./caddy/site` is a bind mount and `file_server` reads from disk per request, so
+editing the page takes effect on the next reload — no `docker compose restart`.
+
+**The status dots will not appear here by default, and that is correct.** Each
+one is a `no-cors` probe of a service subdomain, and every subdomain is a
+separate origin with its own certificate from Caddy's internal CA. You accepted
+the warning for `localhost:8443`; you never accepted one for
+`sonarr.localhost:8443`, so all eight probes fail on TLS and the page hides the
+dots rather than showing a wall of grey. To see the real thing, trust the CA —
+note this changes your login keychain:
+
+```bash
+docker compose cp caddy:/caddydata/caddy/pki/authorities/local/root.crt /tmp/caddy-root.crt
+security add-trusted-cert -d -r trustRoot -k ~/Library/Keychains/login.keychain-db /tmp/caddy-root.crt
+```
+
+Stopping a container will *not* turn its dot grey — Caddy answers 502 and an
+opaque response cannot see the status (decisions.md D24). To exercise a real
+failure, comment a site out of `sites.caddy` and restart Caddy.
+
 To check the Usenet hardlink tree as well as the torrent one:
 
 ```bash

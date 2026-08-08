@@ -319,8 +319,9 @@ services:
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/sites.caddy:/etc/caddy/sites.caddy:ro
-      # The landing page. Static files served by the proxy that is already
-      # running — no separate container just to serve two files.
+      # The landing page. Three static files served by the proxy that is already
+      # running — no separate container, and no build step to run first.
+      # A bind mount read per request, so edits here are live without a restart.
       - ./caddy/site:/srv/site:ro
       - ${CONFIG_ROOT:-/opt/mediaserver}/caddy/data:/caddydata
       - ${CONFIG_ROOT:-/opt/mediaserver}/caddy/config:/config

@@ -214,7 +214,7 @@ sketched. A nested menu would be more surface for a non-technical user to get
 lost in, serving a journey she will not take. The six admin tools are present
 behind `<details>` for the administrator and invisible by default.
 
-It is static HTML and CSS mounted into the **Caddy container already running**
+It is static files mounted into the **Caddy container already running**
 (`./caddy/site:/srv/site:ro`) and served at the bare `{$CADDY_DOMAIN}`, which
 previously 404'd. No extra service, no image to keep patched, no API keys in the
 browser, and it is versioned like everything else.
@@ -233,6 +233,11 @@ el.href = `${location.protocol}//${el.dataset.sub}.${location.host}`;
 One file therefore works at both `<host>.ts.net` and `localhost:8443`, port
 included. A server-side template on `{$CADDY_DOMAIN}` would lose the dev port,
 since that variable carries no port.
+
+All of the above still holds. Two of its literal claims no longer do: there is
+now a third file, `app.js`, and the page makes same-origin requests of its own
+volition. Both are covered in **D24**, which supersedes the details without
+disturbing the reasoning.
 
 ### D18. *arr authentication is pinned in the environment, credentials by API
 
@@ -344,6 +349,77 @@ which is the indexer validation working as intended rather than a silent
 no-results indexer later. Using it needs a FlareSolverr container and a matching
 Prowlarr indexer proxy, i.e. an always-on headless Chrome, so it is opt-in and
 documented in `.env.example` rather than shipped.
+
+### D24. The landing page gets the real service marks, design tokens, and reachability probes
+
+A visual rebuild, retitled **The Thorby Media Server**. The information
+architecture of D16 and D17 is untouched — two hero tiles, six tools collapsed
+behind `<details>`. SvelteKit was raised and rejected: an icon library compiles
+down to inlined SVG paths anyway, so a Node toolchain would have bought nothing
+that the constraint in D17 does not already permit.
+
+**A third file.** `app.js` does three things — build the links, probe what is
+reachable, light the tile under the pointer. Past twenty lines an inline
+`<script>` starts hiding behind markup. It is loaded as a plain synchronous
+`<script>` at the end of `<body>`, not `defer`: the link derivation must run
+before a tile is clickable, and `defer` would leave them at `href="#"` for a few
+milliseconds after they are visible. Same timing as the inline block it replaces.
+
+**The marks are the projects' own.** Sourced from `selfhst/icons`, which matters
+for two reasons no other source offered: every icon is already
+`viewBox="0 0 512 512"`, and every id and CSS class is already namespaced per
+icon, so eight can share one document without collisions. Colours were
+cross-checked against the logos read out of the running containers and match.
+The apps themselves are a poor source — everything except qBittorrent is behind
+the D18 auth wall over HTTP, and `docker exec` yields only five of eight, at five
+different viewBoxes.
+
+Two hand edits. Radarr's body is recoloured `#24292e` → `#fff`, reproducing
+Radarr's own dark variant, because the plate behind it is dark in both themes.
+Bazarr and SABnzbd each have paths that carried no `fill` and leaned on the SVG
+default of black; that is now explicit, so a future `fill: currentColor` cannot
+hijack them. The `<style>` blocks that two icons shipped with were inlined as
+presentation attributes — document CSS does not reliably reach into a `<use>`
+shadow tree, and a class-based fill would have silently dropped. Everything else
+is byte-identical to upstream, verified by rendering both and comparing pixels.
+
+The sprite has to be inline in `index.html` rather than a separate `icons.svg`:
+Safari does not support `<use href="external.svg#id">`.
+
+**One token the light theme does not remap.** `--plate`, the near-black square
+behind every mark, stays dark in light mode. Sonarr's outer ring is `#eee` and
+Radarr's body is white — on a light surface they would simply disappear. Holding
+it constant also turns eight unrelated silhouettes into eight identical rounded
+squares, which is most of what makes the set read as one page.
+
+**The dots mean "answering", not "healthy".** A `no-cors` probe yields an opaque
+response: the status code is unreadable, so resolution alone is the signal. A 401
+login page, a 404, and Caddy's own 502 for a stopped container all resolve — so a
+dead backend still shows green. What the probe does catch is a route that has
+drifted out of `sites.caddy`, a client that has dropped off the tailnet, and
+broken MagicDNS. Reading the real status would need
+`Access-Control-Allow-Origin` on all eight proxied admin UIs; adding a CORS
+header to eight admin surfaces to improve a decorative dot is a bad trade, so it
+was considered and rejected.
+
+Three states, two appearances. "Up" is the only one with colour; "down" is drawn
+exactly like "unknown", and the distinction lives in visually-hidden text. The
+probe cannot tell a broken service from an untrusted certificate from a client
+that is off the tailnet, and a red dot on the household's home page would
+generate a support call for a problem that does not exist. If every probe in a
+group fails the dots are hidden outright — an instrument that is not working
+should not report. **In development every probe fails**: the page is loaded at
+`https://localhost:8443` after accepting one certificate, but
+`sonarr.localhost:8443` is a different origin with its own untrusted certificate
+that was never accepted. See `dev-testing.md` for trusting the CA.
+
+**`validate.sh` now asserts D17 mechanically.** Four checks: no external `src`
+or `href`, no CSS `url()` that is not a `data:` URI or a fragment, the
+`data-sub` set equals the `sites.caddy` route set (spec §5.2 — a stale link
+fails at TLS, not with a 404), and nothing but html/css/js under `caddy/site`.
+The first is the one that matters, and it is why zero external requests is now
+invariant 7 in `CLAUDE.md`: a CDN link renders perfectly on the dev Mac, which
+has internet, and a broken page on the tailnet, which is not guaranteed any.
 
 ---
 

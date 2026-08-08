@@ -80,6 +80,12 @@ requiring explicit justification.
 6. **Gluetun stays commented out** until a VPN provider with working port
    forwarding is chosen (§7). Do not uncomment it speculatively.
 
+7. **The landing page makes zero external requests.** Icons are inline SVG, the
+   type is a system stack. A CDN link or a webfont renders perfectly on the dev
+   Mac, which has internet, and a broken page for a tailnet client, which is not
+   guaranteed any — so the failure surfaces on the target, in front of the
+   household, and never here. `validate.sh` asserts it (decisions.md D17, D24).
+
 ## Repo layout
 
 ```
@@ -94,8 +100,11 @@ caddy/
   Caddyfile               production: ts.net certs from tailscaled
   Caddyfile.dev           dev: internal CA via local_certs
   site/                   the landing page, served by Caddy at the bare domain
-    index.html            Watch / Request tiles + collapsed admin disclosure
-    style.css             no framework, no build step, no external requests
+                          — no framework, no build step, no external requests
+    index.html            Watch / Request tiles, collapsed admin disclosure,
+                          and the inline SVG sprite of the eight service marks
+    style.css             design tokens; dark-first with a light override
+    app.js                host-derived links, reachability probes, pointer FX
 config/
   recyclarr/recyclarr.yml quality profile templates (tracked, not ignored)
 scripts/
@@ -164,8 +173,10 @@ services mount `/data` and that they all resolve to **one** source (invariant 1
 and 2, which no runtime error would catch), confirms Gluetun is still commented
 out, checks the exposure invariants (every published port names an interface,
 Caddy is not on a wildcard, the *arr auth env vars are present, `.env` is 0600),
-validates both Caddyfiles, and shellchecks every script. Run it before every
-commit.
+validates both Caddyfiles, checks the landing page (invariant 7 — no external
+`src`/`href`, no CSS `url()` that is not a `data:` URI, and the tiles' `data-sub`
+set still equals the `sites.caddy` route set), and shellchecks every script. Run
+it before every commit.
 
 With the stack up, two more:
 

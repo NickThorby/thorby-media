@@ -147,6 +147,53 @@ for cf in Caddyfile Caddyfile.dev; do
 done
 
 echo
+echo "Landing page"
+
+# Invariant 7. A CDN link or a webfont here renders perfectly on this Mac, which
+# has internet, and a broken page for a tailnet client, which is not guaranteed
+# any. That is a silent failure on the target in front of the household, so it
+# gets an assertion rather than a comment (decisions.md D17, D24).
+if out=$(grep -rEn '(src|href)="(https?:)?//' caddy/site); then
+  bad "landing page references an external URL"
+  indent <<<"$out"
+else
+  ok "landing page makes no external requests"
+fi
+
+# Same rule, CSS side. Allowed: data: URIs (the favicon, the grain filter) and
+# fragment references — which appear percent-encoded as %23 when they sit inside
+# a data: URI, as the favicon's gradient reference does.
+if out=$(grep -rEn 'url\([^)]*\)|@import' caddy/site | grep -Ev "url\((\"|')?(data:|#|%23)"); then
+  bad "landing page CSS fetches something"
+  indent <<<"$out"
+else
+  ok "landing page CSS uses only data: URIs"
+fi
+
+# Spec §5.2: the tiles and the proxy routes are the same eight names kept in two
+# files. Nothing notices when they drift — a stale link fails at TLS, not 404.
+subs=$(grep -oE 'data-sub="[a-z]+"' caddy/site/index.html | sed -E 's/.*"(.*)"/\1/' | sort -u)
+# shellcheck disable=SC2016  # {$CADDY_DOMAIN} is Caddy's literal placeholder, not a shell expansion
+routes=$(grep -oE '^[a-z]+\.\{\$CADDY_DOMAIN\}' caddy/sites.caddy | sed -E 's/\..*//' | sort -u)
+if [[ "$subs" == "$routes" ]]; then
+  ok "landing page links match the sites.caddy routes"
+else
+  bad "landing page links and sites.caddy routes disagree"
+  printf '      only on the page:  %s\n' "$(comm -23 <(echo "$subs") <(echo "$routes") | tr '\n' ' ')"
+  printf '      only in caddy:     %s\n' "$(comm -13 <(echo "$subs") <(echo "$routes") | tr '\n' ' ')"
+fi
+
+# nosniff is set on this site, so a file Caddy types wrongly is a blank page
+# rather than a warning. Anything that is not html/css/js is almost certainly
+# a stray — a screenshot variant left behind, an editor backup.
+stray=$(find caddy/site -type f ! -name '*.html' ! -name '*.css' ! -name '*.js' | tr '\n' ' ')
+if [[ -z "$stray" ]]; then
+  ok "caddy/site holds only html, css and js"
+else
+  bad "unexpected file types under caddy/site: $stray"
+fi
+
+echo
 echo "Shell"
 
 shell_files=()

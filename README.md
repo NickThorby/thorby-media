@@ -296,6 +296,17 @@ anime requests land in `/data/media/anime`.
 From then on nobody else needs Sonarr or Radarr at all: they search, click
 Request, and it appears.
 
+### 9a. The front door
+
+**`https://<host>.ts.net` is the one URL to give the household.** It serves the
+landing page — Watch, Request, and the six admin tools folded away behind
+*Manage* — and everything else is a subdomain of it. Nobody needs to remember a
+port, and nobody needs to be told which of eight applications does what.
+
+The page is three static files in `caddy/site/`, served by the Caddy that is
+already proxying the stack. Because it is a bind mount read per request, editing
+it is live on save — there is no build step and no `docker compose restart`.
+
 ### 10. Infuse
 
 Add Jellyfin as a source (not an SMB share — the Jellyfin source is what
@@ -418,6 +429,14 @@ playback.
 **Sonarr finds nothing for anime.** Anime indexers are missing, or Series Type
 is not set to Anime.
 
+**The landing page shows no status dots, or a grey one.** The dots are probed by
+the browser, so they report what *your device* can reach, not what the box
+thinks. All of them missing means nothing was reachable — usually the client has
+dropped off the tailnet. A single grey one means that hostname is not answering:
+check it is still routed in `caddy/sites.caddy`. Note the dots cannot see a
+stopped container, because Caddy answers 502 and the probe cannot read the status
+(decisions.md D24) — they mean "answering", not "healthy".
+
 ---
 
 ## Repo contents
@@ -431,7 +450,7 @@ is not set to Anime.
 | `caddy/sites.caddy` | The reverse-proxy routes, shared by both environments |
 | `caddy/Caddyfile` | Production: `*.ts.net` certs from tailscaled |
 | `caddy/Caddyfile.dev` | Dev: internal CA |
-| `caddy/site/` | The landing page — Watch / Request, admin tools collapsed |
+| `caddy/site/` | The landing page — Watch / Request, admin tools collapsed, live reachability dots |
 | `config/recyclarr/recyclarr.yml` | Quality profile templates, incl. anime |
 | `scripts/provision.sh` | Wire the stack together over the apps' APIs — idempotent |
 | `scripts/validate.sh` | Static checks — run before every commit |
