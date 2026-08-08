@@ -41,24 +41,38 @@ die()  { printf '\n\033[31mError:\033[0m %s\n\n' "$1" >&2; exit 1; }
 
 if [[ "${1:-}" == "--init-keys" ]]; then
   step "Generating API keys"
+
+  # Fills an existing blank assignment in place, and only appends when the
+  # variable is absent entirely. Appending unconditionally works — later
+  # assignments win for both `source` and Compose — but it leaves the file with
+  # the same key defined twice, which is fragile and hard to read once a few
+  # rotations have happened.
+  set_key() {
+    local var=$1 value=$2
+    if grep -qE "^${var}=.+" .env; then
+      skip "$var already set"
+      return 1
+    fi
+    if grep -qE "^${var}=[[:space:]]*$" .env; then
+      # BSD and GNU sed disagree on -i, so write through a temp file instead.
+      awk -v v="$var" -v val="$value" \
+        '$0 ~ "^" v "=[[:space:]]*$" { print v "=" val; next } { print }' \
+        .env > .env.new && mv .env.new .env
+      chmod 600 .env
+      ok "generated $var"
+    else
+      printf '%s=%s\n' "$var" "$value" >> .env
+      ok "generated $var"
+    fi
+    return 0
+  }
+
   added=0
   for var in SONARR_API_KEY RADARR_API_KEY PROWLARR_API_KEY; do
-    if grep -qE "^${var}=.+" .env; then
-      skip "$var already set"
-    else
-      printf '%s=%s\n' "$var" "$(openssl rand -hex 16)" >> .env
-      ok "generated $var"
-      added=1
-    fi
+    set_key "$var" "$(openssl rand -hex 16)" && added=1
   done
   for var in QBIT_PASS SAB_PASS BAZARR_PASS ARR_PASS; do
-    if grep -qE "^${var}=.+" .env; then
-      skip "$var already set"
-    else
-      printf '%s=%s\n' "$var" "$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 20)" >> .env
-      ok "generated $var"
-      added=1
-    fi
+    set_key "$var" "$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 20)" && added=1
   done
 
   # .env now holds every password in the stack plus the Usenet provider account.
@@ -423,8 +437,23 @@ provision_jellyseerr() {
     return 0
   fi
 
-  if jseerr GET /api/v1/settings/radarr | jq -e 'any(.[]; .name == "Radarr")' >/dev/null; then
-    skip "Radarr already connected"
+  # Existing connections store a copy of the *arr API key, so rotating a key in
+  # .env leaves them holding a stale one and requests silently stop reaching
+  # Radarr/Sonarr. Reconcile rather than skipping outright.
+  local existing_id existing_key
+  existing_id=$(jseerr GET /api/v1/settings/radarr | jq -r '.[] | select(.name=="Radarr") | .id // empty')
+  existing_key=$(jseerr GET /api/v1/settings/radarr | jq -r '.[] | select(.name=="Radarr") | .apiKey // empty')
+
+  if [[ -n "$existing_id" ]]; then
+    if [[ "$existing_key" == "$RADARR_API_KEY" ]]; then
+      skip "Radarr already connected"
+    else
+      # del(.id): the GET returns it, the PUT rejects it in the body with a 400.
+      jseerr PUT "/api/v1/settings/radarr/${existing_id}" "$(jseerr GET /api/v1/settings/radarr \
+        | jq --arg k "$RADARR_API_KEY" \
+             '.[] | select(.name=="Radarr") | .apiKey = $k | del(.id)')" >/dev/null
+      ok "Radarr connection updated with the current API key"
+    fi
   else
     jseerr POST /api/v1/settings/radarr "$(jq -n \
       --arg k "$RADARR_API_KEY" --argjson id "$rid" --arg pn "$rprofile" \
@@ -435,8 +464,19 @@ provision_jellyseerr() {
     ok "Radarr -> ${rprofile}, /data/media/movies"
   fi
 
-  if jseerr GET /api/v1/settings/sonarr | jq -e 'any(.[]; .name == "Sonarr")' >/dev/null; then
-    skip "Sonarr already connected"
+  existing_id=$(jseerr GET /api/v1/settings/sonarr | jq -r '.[] | select(.name=="Sonarr") | .id // empty')
+  existing_key=$(jseerr GET /api/v1/settings/sonarr | jq -r '.[] | select(.name=="Sonarr") | .apiKey // empty')
+
+  if [[ -n "$existing_id" ]]; then
+    if [[ "$existing_key" == "$SONARR_API_KEY" ]]; then
+      skip "Sonarr already connected"
+    else
+      # del(.id): the GET returns it, the PUT rejects it in the body with a 400.
+      jseerr PUT "/api/v1/settings/sonarr/${existing_id}" "$(jseerr GET /api/v1/settings/sonarr \
+        | jq --arg k "$SONARR_API_KEY" \
+             '.[] | select(.name=="Sonarr") | .apiKey = $k | del(.id)')" >/dev/null
+      ok "Sonarr connection updated with the current API key"
+    fi
   else
     # Jellyseerr keeps a separate anime profile and directory, which is what
     # routes anime requests to /data/media/anime instead of the TV library.
@@ -613,10 +653,26 @@ ensure_hardlinks() {
 
 add_prowlarr_app() {
   local name=$1 impl=$2 contract=$3 app_url=$4 app_key=$5
+  local existing current_key
 
-  if arr GET "$PROWLARR_URL" "$PROWLARR_API_KEY" /api/v1/applications \
-     | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
-    skip "Prowlarr -> $name link exists"
+  existing=$(arr GET "$PROWLARR_URL" "$PROWLARR_API_KEY" /api/v1/applications \
+             | jq --arg n "$name" '.[] | select(.name == $n)')
+
+  if [[ -n "$existing" ]]; then
+    # The link stores its own copy of the app's API key. Rotating a key in .env
+    # leaves this holding the old one, and indexer sync stops working with no
+    # error anywhere obvious — so reconcile it rather than skipping.
+    current_key=$(jq -r '.fields[] | select(.name=="apiKey") | .value // empty' <<<"$existing")
+    if [[ "$current_key" == "$app_key" ]]; then
+      skip "Prowlarr -> $name link exists"
+    else
+      arr PUT "$PROWLARR_URL" "$PROWLARR_API_KEY" \
+        "/api/v1/applications/$(jq -r '.id' <<<"$existing")" \
+        "$(jq --arg k "$app_key" \
+             '.fields = [.fields[] | if .name == "apiKey" then .value = $k else . end]' \
+             <<<"$existing")" >/dev/null
+      ok "Prowlarr -> $name link updated with the current API key"
+    fi
     return
   fi
 
