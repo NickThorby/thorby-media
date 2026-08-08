@@ -219,12 +219,25 @@ echo "SABnzbd"
 if ! up sabnzbd; then
   skip "sabnzbd is not running"
 else
-  if [[ "$(code "$SAB_URL/")" == "200" ]]; then
+  # Assert the specific redirect to /login/, not merely "not 200". SABnzbd also
+  # answers 403 to every caller — including the *arrs — when it decides the
+  # client is off-network, and a not-200 test reads that broken state as a pass.
+  # This check did exactly that until the UI was found dead from the outside.
+  sab_root=$(code "$SAB_URL/")
+  sab_dest=$(curl -sS -o /dev/null -w '%{redirect_url}' --max-time 8 "$SAB_URL/" 2>/dev/null || true)
+  if [[ "$sab_root" == "200" ]]; then
     bad "SABnzbd: GET / returned 200 without a login"
     note "SABnzbd runs post-processing scripts — same class of risk as"
     note "qBittorrent's external-program setting. Set SAB_PASS and re-provision."
+  elif [[ "$sab_root" == "303" && "$sab_dest" == */login/* ]]; then
+    ok "SABnzbd: GET / redirects to the login page"
+  elif [[ "$sab_root" == "403" ]]; then
+    bad "SABnzbd: GET / returns 403 — the UI is refusing everyone, not asking for a login"
+    note "inet_exposure is 0 and SABnzbd does not think the caller is local."
+    note "Check misc/local_ranges against the source address it actually sees:"
+    note "  docker compose exec sabnzbd grep -i refused /config/logs/sabnzbd.log"
   else
-    ok "SABnzbd: GET / requires a login"
+    bad "SABnzbd: GET / returned $sab_root, expected a 303 to /login/"
   fi
 
   # Only the [misc] section is pulled out of the container, never the whole

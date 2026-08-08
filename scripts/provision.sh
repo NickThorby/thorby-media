@@ -319,6 +319,54 @@ provision_sabnzbd() {
   fi
 
   unset -f sab
+
+  sab_fix_local_ranges
+}
+
+# With inet_exposure=0 SABnzbd serves only callers it considers local, judged by
+# the source address of the request. That works on the target, where Docker's
+# DNAT preserves the real client IP, and fails on macOS, where Docker Desktop's
+# port forwarder rewrites every caller — loopback, LAN and Caddy alike — to one
+# synthetic address outside RFC1918. SABnzbd then answers 403 to everything and
+# the web UI is unreachable from anywhere.
+#
+# So: probe it, and only widen local_ranges if the probe actually fails. On the
+# target the probe returns a login redirect and this is a no-op, which is why it
+# is detection rather than a platform check.
+#
+# local_ranges is declared protect=True, so set_config silently ignores it and
+# reports success — the ini is the only way in, and SABnzbd rewrites the ini on
+# shutdown, so the container has to be stopped rather than restarted.
+sab_fix_local_ranges() {
+  local url="http://127.0.0.1:${SAB_PORT:-8085}/"
+  [[ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 "$url" 2>/dev/null)" == "403" ]] || return 0
+
+  warn "SABnzbd is refusing every caller as non-local (Docker Desktop rewrites"
+  warn "  the source address). Widening misc/local_ranges to the private ranges."
+
+  local vol
+  vol=$(docker compose ps -q sabnzbd | xargs -r docker inspect \
+        --format '{{range .Mounts}}{{if eq .Destination "/config"}}{{.Name}}{{end}}{{end}}')
+  [[ -n "$vol" ]] || { warn "  could not find SABnzbd's config volume — skipped"; return 0; }
+
+  docker compose stop sabnzbd >/dev/null 2>&1
+  docker run --rm -v "$vol:/config" alpine \
+    sed -i 's|^local_ranges = .*|local_ranges = 127.,10.,172.,192.168.|' /config/sabnzbd.ini
+  docker compose start sabnzbd >/dev/null 2>&1
+
+  local waited=0
+  while (( waited < 60 )); do
+    [[ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$url" 2>/dev/null)" == "403" ]] || break
+    sleep 3
+    waited=$(( waited + 3 ))
+  done
+
+  if [[ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 "$url" 2>/dev/null)" == "403" ]]; then
+    warn "  still 403 — check the address it sees:"
+    warn "    docker compose exec sabnzbd grep -i refused /config/logs/sabnzbd.log"
+  else
+    ok "local_ranges widened; the web UI answers again (sabnzbd restarted)"
+  fi
 }
 
 # ─── Bazarr ──────────────────────────────────────────────────────────────────
