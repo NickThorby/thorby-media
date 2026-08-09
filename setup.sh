@@ -970,11 +970,12 @@ EOF
     fi
   fi
 
-  # A current file is deliberately NOT an early return. The file says nothing
-  # about the kernel: restarting the Docker daemon re-creates DOCKER-USER, and
-  # it comes back empty until something loads after.rules into it. Returning
-  # here would skip the reload at the bottom and leave every published port
-  # unfiltered, while the line above reported the rules were in place.
+  # A current file is deliberately NOT an early return, because the file being
+  # right says nothing about the kernel being right, and this chain is the whole
+  # of D19. Measured on the target: a `systemctl restart docker` does NOT empty
+  # DOCKER-USER, so that particular fear is unfounded. What remains is that
+  # nothing here has ever verified the two agree, the reload is a second, and
+  # the failure it would cover is silent by construction.
   if ! $uptodate; then
     # Rewritten rather than skipped when it differs. LAN_SUBNET and PUBLIC_HTTP
     # are both routinely changed after the first run -- and report() ends by
