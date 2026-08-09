@@ -414,6 +414,21 @@ From off-network (phone on mobile data, or any host outside RFC1918):
 curl -s https://<domain>/ | grep -c 'class="manage"'      # 0
 ```
 
+Then the same request again, **sending the header yourself**. `templates` reads
+`X-Local-Client` off the request as it arrived, so until `sites.caddy` strips it
+for public clients, one header renders the whole Manage block to the internet.
+The plain check above cannot see that, because the tester never sends it:
+
+```bash
+curl -s -H 'X-Local-Client: 1' https://<domain>/ | grep -c 'class="manage"'   # 0
+curl -s -H 'X-Local-Client: 1' https://<domain>/ | grep -c 'data-lan'         # 0
+```
+
+A count above zero here is a disclosure, not a way in — the nine apps still have
+no route, no DNS record and a `DOCKER-USER` drop — but it hands out `ADMIN_HOST`
+and the port map, which is exactly what gating the sprite is for. `validate.sh`
+asserts the strip statically; this is the live proof.
+
 A count of `{{` above zero means `templates` is missing from the site block, in
 which case the conditional leaks as literal text **and** the admin section
 renders publicly. `validate.sh` catches that statically; this catches it live.
@@ -494,8 +509,32 @@ The reason this is a checklist item and not a settings screenshot: Cleanuparr ha
 backup covers `${CONFIG_ROOT}` only — and its whole purpose is removing things.
 A misconfigured cleaner is unrecoverable in a way nothing else in this stack is.
 
-Ship it with the destructive cleaners off (spec §6 step 8) and turn them on one
-at a time, watching each. Before enabling any of them:
+Two things about the container itself first, both assumed rather than proven
+because this image has never been started anywhere (D30).
+
+**The healthcheck assumes `curl` is in the image.** Cleanuparr is not a
+LinuxServer build, and Jellyseerr's healthcheck deliberately uses `wget` because
+its image has no `curl` — so the binary is not a free choice here. Nothing
+`depends_on` cleanuparr, so a wrong one does not cascade; it just leaves the
+container permanently `unhealthy` and that status line stops meaning anything.
+
+```bash
+docker compose ps cleanuparr                                  # healthy
+# if not:
+docker compose exec cleanuparr sh -c 'command -v curl wget'   # swap the test
+```
+
+**`PUID`/`PGID` are honoured.** D30 records that Cleanuparr implements them
+itself rather than through s6. If it does not, the process holding read-write
+`/data` is root:
+
+```bash
+docker compose exec cleanuparr id                             # uid=1000 gid=1000
+stat -c '%u %g %n' /mnt/disk1/data/torrents                   # 1000 1000
+```
+
+Then the cleaners. Ship them off (spec §6 step 8) and turn them on one at a
+time, watching each. Before enabling any of them:
 
 ```bash
 # what it thinks it is talking to

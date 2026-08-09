@@ -73,8 +73,28 @@
 # Three RFC1918 ranges. WG_SUBNET defaults to 10.8.0.0/24, already inside
 # 10.0.0.0/8; a WireGuard subnet chosen outside these ranges must be added here
 # or neither branch fires for tunnel clients (decisions.md D26).
+#
+# The strip is not decoration. Setting the header for @private only leaves a
+# client-supplied X-Local-Client: 1 untouched on every other request, and it
+# then reaches `templates` intact — so a visitor from the internet could render
+# the Manage block and the admin sprite by sending one header. That discloses
+# ADMIN_HOST and the port map; it does not reach the apps, which have no route,
+# no DNS record and a DOCKER-USER drop. Closed anyway, because this file gates
+# the sprite specifically to keep those names out of the public source.
+#
+# Two disjoint matchers rather than one unmatched `request_header -X-Local-Client`
+# ahead of the set: that arrangement depends on how Caddy orders delete against
+# set inside a single header handler, and this one does not depend on it at all.
+# remote_ip reads the peer address, not X-Forwarded-For, so it cannot be spoofed
+# the same way. validate.sh asserts the strip is here (decisions.md D31).
+#
+# The two range lists must stay identical. Widening @private alone is harmless —
+# the strip runs first and the set overrides it — but narrowing it alone leaves a
+# gap that matches neither, and a client in it can supply the header again.
 (private_only) {
 	@private remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+	@public not remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+	request_header @public -X-Local-Client
 	request_header @private X-Local-Client 1
 }
 

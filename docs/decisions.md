@@ -793,7 +793,15 @@ Sonarr and Radarr and will waste an afternoon if assumed:
 
 Its download-client category field is `musicCategory` for both clients, which the
 existing `qbit_fields`/`sab_fields` helpers already handle since they take the
-field name as an argument.
+field name as an argument. **The category itself has to exist on both clients**,
+and that half was missed on the first pass: `provision.sh` still created only
+`movies`, `tv` and `anime`. Neither client errors on a name it does not know —
+qBittorrent creates the category implicitly with no save path and drops the
+download in the default `/data/torrents`, SABnzbd falls back to the default
+complete directory — so music would have landed outside its own subdirectory
+while `torrents/music` and `usenet/complete/music` sat empty, with imports still
+hardlinking correctly and nothing reporting a thing. Both loops now include
+`music`.
 
 **What music does not get, and why that is not a gap to fix.** Jellyseerr is a
 film and TV product with no Lidarr support, so there is no household-facing
@@ -899,6 +907,37 @@ tags them for the Manage section — so the tiles now use the same tag and rende
 **The header was renamed `X-Admin-Visible` -> `X-Local-Client`.** It now decides
 two unrelated things, and a name describing only one of them is a name the next
 person reasons wrongly from.
+
+**Amendment: the header is stripped from public requests, not merely set for
+private ones.** As first written — and as `X-Admin-Visible` was written before
+it — `private_only` set the header for `@private` and did nothing otherwise, so
+a client-supplied `X-Local-Client: 1` from the internet survived to `templates`
+and rendered both branches: the Manage block, the nine admin marks, and
+`data-lan` on the hero tiles.
+
+That is a disclosure and not a way in. The nine apps still have no route in this
+file, no public DNS record, and a `DOCKER-USER` drop; all three mechanisms D25
+relies on are untouched, and the sentence above about presentation-versus-control
+remains exactly true. What a spoofed header hands out is `ADMIN_HOST`, the port
+map and the service names — which is precisely what `index.html` gates the
+sprite to withhold, so the intent was already there and the mechanism did not
+match it. Off-network verification could never catch it either, because the
+tester does not send the header.
+
+The fix is a second, disjoint matcher:
+
+```
+@public not remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+request_header @public -X-Local-Client
+```
+
+Disjoint rather than an unmatched `request_header -X-Local-Client` ahead of the
+set, which would depend on how Caddy orders delete against set inside one header
+handler. `remote_ip` needs no equivalent hardening: it reads the peer address
+and ignores `X-Forwarded-For` unless told otherwise.
+
+`validate.sh` asserts the strip is present and `verification.md` item 12 sends
+the header deliberately.
 
 **What was rejected.** `verification.md` item 11 already proposes the better fix
 for the same problem: a DNS override on the router pointing the three public

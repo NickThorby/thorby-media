@@ -192,7 +192,11 @@ Nothing sensitive gets committed. `.env`, API keys, the wg-easy admin password,
 WireGuard peer keys, and the real remote-access hostname all stay out of git —
 `.gitignore` covers them. Peer keys never enter the repo at all: wg-easy keeps
 them in `${CONFIG_ROOT}/wg-easy`, which is also why that directory is part of
-the backup set and must not be shared. The *arr API keys are pinned in `.env` rather than read out of each UI
+the backup set and must not be shared. **`${CONFIG_ROOT}/cleanuparr` is the same
+class** — Cleanuparr is configured by hand rather than by `provision.sh`, so its
+database ends up holding the qBittorrent password and all four *arr API keys.
+Both directories are in the backup archive, which is therefore as sensitive as
+`.env`. The *arr API keys are pinned in `.env` rather than read out of each UI
 (decisions.md D12); treat them as passwords, since a valid key is full control
 of that app. Placeholders in tracked files use the spec's own notation:
 `media.example.com`, `<lan-ip>`, `<render-gid>`, `<disk1-uuid>`.

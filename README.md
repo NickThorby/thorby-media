@@ -207,16 +207,23 @@ Jellyseerr to Radarr and Sonarr by quality-profile *name*, and those profiles do
 not exist until Recyclarr has run. Recyclarr's own schedule is `@daily`, so
 without this the first provision run skips the Jellyseerr step.
 
-**6. Finish the two wizards that cannot be automated,** over an SSH tunnel so
+**6. Finish the three wizards that cannot be automated,** over an SSH tunnel so
 they are never exposed:
 
 ```bash
-ssh -L 8096:localhost:8096 -L 5055:localhost:5055 <user>@<host>
+ssh -L 8096:localhost:8096 -L 5055:localhost:5055 -L 11011:localhost:11011 \
+    <user>@<host>
 ```
 
-Jellyfin first (create the admin account and the three libraries), then
+Jellyfin first (create the admin account and the four libraries), then
 Jellyseerr — see steps 8 and 9 of the configuration sequence below. Re-run
 `./scripts/provision.sh` afterwards to wire Jellyseerr up.
+
+Cleanuparr is the third, and it is here rather than left for later because
+step 7 will not let you past it: `audit-auth.sh` fails while its setup flow is
+still open. It has no first-run credentials to pin, so the tunnel is the only
+way to reach it while `BIND_ADDR` is at loopback — step 7a below is what to do
+once you are on it.
 
 **7. Check it, then open it to the LAN.**
 

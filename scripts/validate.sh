@@ -330,6 +330,21 @@ else
   printf '      %s\n' "Without templates the {{if}} leaks as text and Manage renders publicly."
 fi
 
+# X-Local-Client decides what the page renders, and `templates` reads it off the
+# request as it arrived. Set it for @private and nothing else, and a client from
+# the internet supplying its own header keeps it — Manage and the admin sprite
+# render for anyone who sends one line. Not a route to the apps, but it hands
+# out ADMIN_HOST and the port map, which is the disclosure the sprite is gated
+# to prevent. The strip is what closes it and it is one deletion from being
+# gone again (decisions.md D31).
+if grep -qE '^[[:space:]]*request_header @public -X-Local-Client[[:space:]]*$' caddy/sites.caddy; then
+  ok "sites.caddy strips a client-supplied X-Local-Client"
+else
+  bad "sites.caddy does not strip X-Local-Client for public clients"
+  printf '      %s\n' "A request from the internet can set it itself and render Manage." \
+                      "Add '@public not remote_ip ...' and 'request_header @public -X-Local-Client'."
+fi
+
 # .env is the single source of truth for a host port. A literal address or port
 # in the page is a second one, and the two drift silently.
 #

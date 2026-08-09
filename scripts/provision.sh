@@ -220,10 +220,16 @@ provision_qbittorrent() {
     }" >/dev/null
   ok "preferences set (password, save paths, preallocation, host-header validation off)"
 
-  # Categories map to save paths under /data/torrents/ (spec §6 step 1).
+  # Categories map to save paths under /data/torrents/ (spec §6 step 1). This
+  # list has to match the category names the *arrs are given further down —
+  # Lidarr asks for 'music' — because qBittorrent accepts an unregistered
+  # category on an incoming torrent and creates it with no save path. The
+  # download then lands in the default /data/torrents rather than its own
+  # subdirectory, imports still hardlink because it is the same filesystem, and
+  # nothing anywhere reports a problem (decisions.md D29).
   local existing cat
   existing=$(qbt http://localhost:8080/api/v2/torrents/categories)
-  for cat in movies tv anime; do
+  for cat in movies tv anime music; do
     if jq -e --arg c "$cat" 'has($c)' <<<"$existing" >/dev/null 2>&1; then
       skip "category '$cat' exists"
     else
@@ -279,12 +285,15 @@ provision_sabnzbd() {
       --data-urlencode "value=/data/usenet/complete" >/dev/null
   ok "paths -> /data/usenet/{incomplete,complete}"
 
+  # Same list as qBittorrent's above, and for the same reason: a category the
+  # *arrs name but SABnzbd does not define falls back to the default, so music
+  # would complete into /data/usenet/complete instead of complete/music.
   local c
-  for c in movies tv anime; do
+  for c in movies tv anime music; do
     sab -d mode=set_config -d section=categories -d keyword="$c" \
         --data-urlencode "dir=$c" >/dev/null
   done
-  ok "categories movies, tv, anime"
+  ok "categories movies, tv, anime, music"
 
   # The provider is what actually holds the articles; the indexers only say
   # where they are. Without one, SABnzbd finds everything and downloads nothing.
