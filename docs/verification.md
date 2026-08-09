@@ -379,16 +379,32 @@ sudo systemctl start mediaserver-backup.service
 Then prove the archive is actually usable — restore into a scratch path and open
 the database, rather than trusting that tar exited 0:
 
+Every command below needs `sudo`: the archive is written mode 0600 and owned by
+root, because it contains wg-easy's peer keys and Cleanuparr's database — which
+holds the qBittorrent password and all four *arr API keys. That makes it as
+sensitive as `.env`, and it is why the extract is not readable as your own user.
+
 ```bash
-mkdir -p /tmp/restore-test
-tar -xzf /mnt/disk1/backups/mediaserver-config-*.tar.gz -C /tmp/restore-test
-ls /tmp/restore-test/mediaserver/
-sqlite3 /tmp/restore-test/mediaserver/sonarr/sonarr.db 'PRAGMA integrity_check;'
-rm -rf /tmp/restore-test
+latest=$(sudo ls -1t /mnt/disk1/backups/mediaserver-config-*.tar.gz | head -1)
+sudo mkdir -p /tmp/restore-test
+sudo tar -xzf "$latest" -C /tmp/restore-test
+sudo ls /tmp/restore-test/mediaserver/
+for db in sonarr/sonarr.db radarr/radarr.db lidarr/lidarr.db prowlarr/prowlarr.db; do
+  printf '%-22s %s\n' "$db" \
+    "$(sudo sqlite3 "/tmp/restore-test/mediaserver/$db" 'PRAGMA integrity_check;')"
+done
+sudo rm -rf /tmp/restore-test
 ```
 
-`integrity_check` must return `ok`. Anything else means the database was copied
-mid-write and the backup is worthless.
+`integrity_check` must return `ok` for all four. Anything else means the database
+was copied mid-write and the backup is worthless.
+
+Confirm `wg-easy` and `cleanuparr` are both in the listing. They are the two
+directories `provision.sh` cannot recreate — everything else could be rebuilt by
+re-running it, but those two hold state that exists nowhere else.
+
+Measured on the target, 9 Aug 2026: 54 MB, all four databases `ok`, both
+directories present.
 
 - [ ] Passes
 
