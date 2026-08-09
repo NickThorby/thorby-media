@@ -171,26 +171,42 @@ provision_qbittorrent() {
   docker compose ps --status running --services | grep -qx qbittorrent \
     || die "qbittorrent is not running. Start the stack: docker compose up -d"
 
-  # Log in with the permanent password if it is already set, otherwise fall back
-  # to the temporary one qBittorrent prints to its log on every start until a
-  # permanent password exists.
-  if docker compose exec -T -e U="$QBIT_USER" -e P="$QBIT_PASS" qbittorrent sh -c \
-       'curl -fsS -c /tmp/qbt.cookies -o /dev/null -X POST \
-          --data-urlencode "username=$U" --data-urlencode "password=$P" \
-          http://localhost:8080/api/v2/auth/login' 2>/dev/null; then
-    ok "authenticated with the password from .env"
+  # Three ways in, tried in order, because there are three states this can be
+  # found in and only the first is the steady one.
+  qbt_login() {
+    docker compose exec -T -e U="$1" -e P="$2" qbittorrent sh -c \
+      'curl -fsS -c /tmp/qbt.cookies -o /dev/null -X POST \
+         --data-urlencode "username=$U" --data-urlencode "password=$P" \
+         http://localhost:8080/api/v2/auth/login' 2>/dev/null
+  }
+
+  if qbt_login "$QBIT_USER" "$QBIT_PASS"; then
+    ok "authenticated as '$QBIT_USER' with the password from .env"
+
+  # Password already ours, username still the stock `admin`. This is the state
+  # an earlier revision of this script left behind: it set web_ui_password and
+  # not web_ui_username. Both other paths fail here -- QBIT_USER because the
+  # account has a different name, the temporary password because one is only
+  # issued while no password is set -- so without this branch the box is
+  # unreachable through the API and the fix is a manual password reset.
+  elif [[ "$QBIT_USER" != "admin" ]] && qbt_login admin "$QBIT_PASS"; then
+    warn "logged in as 'admin' -- the username was never changed; fixing it below"
+
+  # Fresh container: no password set, so qBittorrent prints a temporary one to
+  # its log on every start.
   else
     local tmp
     tmp=$(docker compose logs qbittorrent 2>&1 \
           | grep -o 'temporary password is provided for this session: .*' \
           | tail -1 | awk '{print $NF}' | tr -d '\r')
-    [[ -n "$tmp" ]] || die "Cannot log in to qBittorrent and no temporary password found in its log.
-       If the password was changed by hand, put it in QBIT_PASS in .env."
+    [[ -n "$tmp" ]] || die "Cannot log in to qBittorrent: '$QBIT_USER' and 'admin' both
+       rejected QBIT_PASS, and no temporary password is in the log -- which
+       means one is already set. If it was changed by hand, put it in
+       QBIT_PASS in .env. To start over: docker compose stop qbittorrent,
+       remove WebUI\\\\Password_PBKDF2 from
+       \${CONFIG_ROOT}/qbittorrent/qBittorrent/qBittorrent.conf, and start it."
 
-    docker compose exec -T -e P="$tmp" qbittorrent sh -c \
-      'curl -fsS -c /tmp/qbt.cookies -o /dev/null -X POST \
-         --data-urlencode "username=admin" --data-urlencode "password=$P" \
-         http://localhost:8080/api/v2/auth/login' \
+    qbt_login admin "$tmp" \
       || die "Login with the temporary password failed. Try: docker compose restart qbittorrent"
     ok "authenticated with the temporary password"
   fi
