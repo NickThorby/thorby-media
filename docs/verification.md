@@ -5,12 +5,28 @@ on the box**, and most of them cannot be meaningfully approximated anywhere
 else — that is why they are a separate checklist rather than part of
 `validate.sh`.
 
-Work through them in order. Items 1–2 should pass before the stack is
-configured; 3–4 are the ones people skip and regret.
+Work through them in order. Items 1–2 do not apply to this box and say why;
+3–4 are the ones people skip and regret.
 
 ---
 
 ## 1. `vainfo` reports HEVC and H.264 encode/decode entrypoints
+
+**Not applicable on this hardware, and not merely pending (decisions.md D35).**
+
+The MSI Z370 GODLIKE GAMING has no display outputs, and MSI ships no
+Integrated Graphics Configuration menu on such boards — there is no
+`IGD Multi-Monitor` setting anywhere in the firmware, so the i7-8700K's UHD 630
+cannot be enabled. Confirmed on the box: nothing at PCI `00:02.0`, and the only
+DRM device is the GTX 980 Ti under `nouveau`, which VAAPI cannot transcode with.
+
+This is left as a check that cannot pass rather than deleted, because it becomes
+live the moment a VAAPI-capable card is fitted — an Intel Arc A310 is the
+intended one, and it needs no repo change at all: `RENDER_GID` stays 992,
+`docker-compose.yml` already passes `/dev/dri`, and `setup.sh` already puts the
+media user in the `render` group.
+
+When that card is in:
 
 ```bash
 vainfo 2>&1 | grep -Ei 'h264|hevc'
@@ -19,35 +35,33 @@ vainfo 2>&1 | grep -Ei 'h264|hevc'
 Expect both `VAEntrypointVLD` (decode) and `VAEntrypointEncSlice` or
 `VAEntrypointEncSliceLP` (encode) against H264 and HEVC profiles.
 
-If `vainfo` reports no driver or `/dev/dri` is missing entirely, the iGPU is
-disabled in BIOS — revisit §1.1 (Integrated Graphics Enabled, IGD Multi-Monitor
-Enabled, Initiate Graphic Adapter set to IGD). Nothing downstream will work
-until this passes.
-
-- [ ] Passes
+- [ ] N/A — no VAAPI-capable GPU fitted
 
 ## 2. `/dev/dri/renderD128` is visible inside the Jellyfin container
 
+**Also gated on D35.** `/dev/dri/renderD128` exists today and is passed into the
+container, so a naive check here *passes* — it is the nouveau render node for
+the 980 Ti, and it transcodes nothing. That is precisely the silent success this
+file exists to catch, so identify the device by vendor rather than by name:
+
 ```bash
-getent group render                       # note the GID; it must match RENDER_GID in .env
+for d in /sys/class/drm/card*/device; do
+  echo "$(basename "$(dirname "$d")") vendor=$(cat "$d/vendor")"
+done                                      # 0x8086 is Intel; 0x10de is NVIDIA
+getent group render                       # must match RENDER_GID in .env
 docker compose exec jellyfin ls -l /dev/dri
 ```
 
-Expect `renderD128` present, and the container's user able to reach it. Then
-confirm Jellyfin itself sees it: Dashboard → Playback → hardware acceleration
-VAAPI, device `/dev/dri/renderD128`.
+With two cards fitted, enumeration order is not guaranteed, so set Jellyfin's
+VAAPI device explicitly to whichever node is Intel rather than trusting the
+`renderD128` default: Dashboard → Playback → hardware acceleration VAAPI.
 
 A functional test beats a settings screenshot — play a file that forces a
-transcode (browser client, cap the quality) and watch:
+transcode (browser client, cap the quality) and watch `intel_gpu_top`. The Video
+engine should show activity; if the CPU pegs and the GPU stays idle, it is
+falling back to software.
 
-```bash
-intel_gpu_top
-```
-
-The Video engine should show activity. If the CPU pegs and the GPU stays idle,
-it is falling back to software.
-
-- [ ] Passes
+- [ ] N/A — no VAAPI-capable GPU fitted
 
 ## 3. A test import produces a shared inode, not a copy
 
@@ -101,68 +115,73 @@ df -h /data                          # ...will exceed actual used space if hardl
 
 - [ ] Passes
 
-## 5. Three names public, nine apps not — and the certificates issue
+## 5. Nothing is reachable from the internet but the WireGuard port
 
-The single most important check in this file. Three separate mechanisms are
-supposed to keep the admin apps off the internet (D25); verify each, because
-any one of them silently doing nothing still leaves the other two working.
+The single most important check in this file. **Rewritten for D33/D34** — this
+used to verify that three names were public and nine apps were not. Nothing is
+public now: the router forwards `WG_PORT` and nothing else, and all twelve names
+resolve to the box's LAN address.
 
-**Certificates.** Requires both 80 and 443 forwarded — Let's Encrypt validates
-over 80, and if only 443 is forwarded issuance fails while everything looks
-correct:
+**Certificates, from DNS-01.** No inbound path is needed for issuance, so a
+failure here is the Cloudflare token, not the router:
 
 ```bash
-curl -sI https://<domain>            | head -1   # 200
-curl -sI https://jellyfin.<domain>   | head -1   # 200 or a redirect to login
-curl -sI https://seerr.<domain>      | head -1   # 200 or a redirect to login
-docker compose logs caddy | grep -i 'certificate obtained'
+curl -sI https://<domain>          | head -1   # 200
+curl -sI https://jellyfin.<domain> | head -1   # 302 to login
+curl -sI https://sonarr.<domain>   | head -1   # 302 to login
+docker compose logs caddy | grep -c 'certificate obtained'   # 12
+docker compose logs caddy | grep -o '"issuer":"[^"]*"' | sort -u
 ```
 
-**No DNS for the eight.** Each must return nothing at all:
+The issuer must be `acme-v02` and not `acme-staging-v02`. A staging certificate
+works perfectly for `curl -k` and fails in every browser in the house.
+
+**Every name resolves to a private address.** This is what makes the records
+harmless in a public zone:
 
 ```bash
-for h in sonarr radarr lidarr prowlarr bazarr qbit sab cleanuparr; do
-  printf '%-11s %s\n' "$h" "$(dig +short "$h.<domain>" | tr '\n' ' ')"
+for h in "" jellyfin. seerr. sonarr. radarr. lidarr. prowlarr. bazarr. qbit. sab. cleanuparr. wg.; do
+  printf '%-12s %s\n' "$h" "$(dig +short "${h}<domain>" @1.1.1.1 | tr '\n' ' ')"
 done
+dig +short <wg-host> @1.1.1.1     # the ONLY name pointing at the WAN address
 ```
 
-**No route even if DNS existed.** Force the Host header past DNS:
+**The admin routes refuse anyone off-net.** `admin_only` is now the control that
+the absence of a route used to be, so it is the thing to test. From a client
+outside RFC1918 — which, with nothing forwarded, means from the box itself
+against a source it does not trust, or after temporarily forwarding 443:
 
 ```bash
-curl -sk -o /dev/null -w '%{http_code}\n' --resolve "sonarr.<domain>:443:<wan-ip>" \
-  "https://sonarr.<domain>/"
+docker compose exec -T caddy caddy adapt --config /etc/caddy/Caddyfile \
+  | jq -r '[.. | objects | select(.match? and ((.match[]?.host[]?) == "sonarr.<domain>"))] | .[0]
+           | .handle[0].routes[] | "\(.handle[0].handler)  \(.match // "none")"'
 ```
 
-Anything other than a proxied 200 is correct — Caddy has no site for that name.
+`static_response` with a `not remote_ip` matcher must appear **before**
+`reverse_proxy`. Handler order is the whole guarantee; if the 403 sorts after
+the proxy it never runs.
 
-**No packet.** From a host on neither the LAN nor the tunnel — a phone on
-mobile data, with WireGuard OFF — will do:
+**No packet.** From a host on neither the LAN nor the tunnel — a phone on mobile
+data with WireGuard OFF:
 
 ```bash
 nmap -Pn -p 80,443,5055,6767,6881,8080,8085,8096,8686,8989,7878,9696,11011,51821 <wan-ip>
 nmap -Pn -sU -p 51820 <wan-ip>
 ```
 
-Every published port is in that list on purpose, `8085` included — SABnzbd runs
-post-processing scripts, so an open SABnzbd is the same class of risk as an open
-qBittorrent (spec §5.3), and it is the one most easily left out of a scan
-because it is the only host port that does not match its container port.
-
-Only 80 and 443 open on TCP; everything else filtered or closed, `51821`
-included. The UDP scan is expected to report `open|filtered` — WireGuard does
-not answer a probe without a valid key, so nmap cannot tell the two apart. That
+**Every TCP port filtered or closed, 80 and 443 included** — that is the change
+from D25. The UDP scan is expected to report `open|filtered`: WireGuard does not
+answer a probe without a valid key, so nmap cannot tell the two apart, and that
 indistinguishability is the property you want.
 
-**Admin access still works.** With the tunnel up on the client, using the *same*
-address the LAN uses — that equivalence is the thing being tested:
-
 ```bash
-curl -sI http://<lan-ip>:8989 | head -1
+ufw status verbose        # SSH from the LAN, wg0, the LAN, 51820/udp, and
+                          # 51821/tcp from 172.16.0.0/12 only. NOT 80 or 443.
 ```
 
-```bash
-ufw status verbose        # SSH, wg0, LAN, 80/443 and 51820/udp allowed
-```
+That last rule is the one to read carefully: it exists solely so Caddy can proxy
+the wg-easy UI, which host networking puts out of reach of a container name
+(D34). It is the one place a container can reach a host listener.
 
 - [ ] Passes
 
@@ -373,117 +392,99 @@ mid-write and the backup is worthless.
 
 - [ ] Passes
 
-## 11. The landing page reaches the household, and the house reaches the domain
+## 11. Every name answers from the LAN and from the tunnel
 
-Hairpin NAT is the failure that only shows up indoors. From a LAN client that is
-**not** the box and **not** on the tunnel:
+**Rewritten for D33.** This used to test hairpin NAT — whether the router would
+loop a LAN client back through its own WAN address to reach the public names.
+That failure mode is gone: the names resolve straight to `192.168.0.10`, so no
+packet leaves the house and there is nothing to hairpin.
 
-```bash
-curl -sI https://media.thorby.tech          | head -1
-curl -sI https://jellyfin.media.thorby.tech | head -1
-curl -sI https://seerr.media.thorby.tech    | head -1
-```
-
-All three answer, with a valid certificate. A timeout here while the same names
-work from mobile data means the router will not loop a LAN client back through
-its own WAN address. Fix it with a local DNS override on the router pointing
-those three names at `CADDY_BIND_ADDR` — the certificate still validates, since
-it is issued for the name and not the address.
+From a LAN client that is **not** the box:
 
 ```bash
-dig +short media.thorby.tech
+for h in "" jellyfin. seerr. sonarr. qbit. wg.; do
+  printf '%-10s %s\n' "$h" "$(curl -sI "https://${h}<domain>/" | head -1)"
+done
 ```
 
-Run from a LAN client, this shows which answer that client is getting.
+All answer, with a certificate the browser accepts and no `-k`. Then the check
+that matters more, from a phone on mobile data **with the tunnel up**: the same
+commands, the same results. That equivalence is the whole remote-access design
+(D26) — one address that works in both places.
+
+With the tunnel **down**, all of them must fail to resolve or time out. If any
+name answers from mobile data without the tunnel, something is forwarded that
+should not be; go back to item 5.
 
 - [ ] Passes
 
-## 12. The landing page hides Manage from the internet
+## 12. The landing page hides Manage from clients it should not trust
 
-Presentation, not a control — but if it is wrong, the page is advertising
-hostnames it should not. Check both sides.
+Presentation, not a control — but if it is wrong, the page advertises hostnames
+it should not.
 
 From a LAN or tunnel client:
 
 ```bash
-curl -s https://<domain>/ | grep -c 'class="manage"'      # 1
-curl -s https://<domain>/ | grep -c '{{'                  # 0 — templates ran
-curl -s https://<domain>/ | grep -o 'http://[^"]*'        # <lan-ip>:<port> links
+curl -s https://<domain>/ | grep -c 'class="manage"'           # 1
+curl -s https://<domain>/ | grep -c '{{'                       # 0 — templates ran
+curl -s https://<domain>/ | grep -c 'class="chip"'             # 9
+curl -s https://<domain>/ | grep -c 'i-lidarr\|i-cleanuparr'   # 2
 ```
-
-From off-network (phone on mobile data, or any host outside RFC1918):
-
-```bash
-curl -s https://<domain>/ | grep -c 'class="manage"'      # 0
-```
-
-Then the same request again, **sending the header yourself**. `templates` reads
-`X-Local-Client` off the request as it arrived, so until `sites.caddy` strips it
-for public clients, one header renders the whole Manage block to the internet.
-The plain check above cannot see that, because the tester never sends it:
-
-```bash
-curl -s -H 'X-Local-Client: 1' https://<domain>/ | grep -c 'class="manage"'   # 0
-curl -s -H 'X-Local-Client: 1' https://<domain>/ | grep -c 'data-lan'         # 0
-```
-
-A count above zero here is a disclosure, not a way in — the nine apps still have
-no route, no DNS record and a `DOCKER-USER` drop — but it hands out `ADMIN_HOST`
-and the port map, which is exactly what gating the sprite is for. `validate.sh`
-asserts the strip statically; this is the live proof.
 
 A count of `{{` above zero means `templates` is missing from the site block, in
 which case the conditional leaks as literal text **and** the admin section
-renders publicly. `validate.sh` catches that statically; this catches it live.
+renders to everyone. `validate.sh` catches that statically; this catches it live.
 
-Nine chips, not seven, since D29 and D30 — and the sprite is gated on the same
-header, so an off-network client must not receive the marks either:
+**The other half of this check can no longer be run, and that is worth stating
+rather than leaving as an unticked box.** It used to be done from a phone on
+mobile data, including the `X-Local-Client` spoof that D31 closed. Under D33
+nothing is forwarded, so there is no vantage point outside RFC1918 from which to
+reach Caddy at all — every request that can arrive is one `private_only` treats
+as private, and the `@public` branch is unreachable by construction.
 
-```bash
-# LAN or tunnel
-curl -s https://<domain>/ | grep -c 'class="chip"'        # 9
-curl -s https://<domain>/ | grep -c 'i-lidarr\|i-cleanuparr'   # 2
-# off-network
-curl -s https://<domain>/ | grep -c 'i-lidarr\|i-cleanuparr'   # 0
-```
+So the public-side behaviour of both `private_only` and `admin_only` is now
+asserted **structurally** rather than observed:
 
-- [ ] Passes
+- `validate.sh` asserts `sites.caddy` strips a client-supplied `X-Local-Client`
+- `validate.sh` asserts every block in `admin.caddy` imports `admin_only`, and
+  that its ranges match `private_only`'s
+- item 5's `caddy adapt` check asserts the 403 handler sorts before the proxy
 
-## 12a. The hero tiles resolve locally on the LAN and publicly off it
+If `PUBLIC_HTTP` is ever set true, this item becomes testable again and **must
+be run before the forward is opened**, not after.
 
-D31. The two tiles the household uses now navigate to `<lan-ip>:<port>` for a
-client inside and to the public names for everyone else, from the same file — so
-both sides have to be checked or the failure is invisible from whichever one you
-happen to be on.
+- [ ] Passes (LAN/tunnel half)
+- [ ] N/A — no off-network vantage point exists while PUBLIC_HTTP is false
 
-From a LAN or tunnel client:
+## 12a. Every link on the page is built client-side and resolves
 
-```bash
-curl -s https://<domain>/ | grep -o 'data-lan="[^"]*"'
-# data-lan="http://<lan-ip>:8096"
-# data-lan="http://<lan-ip>:5055"
-```
-
-A trailing colon with no port — `http://10.0.0.5:` — means `JELLYFIN_PORT` or
-`SEERR_PORT` is missing from the `caddy` service's `environment:` block in
-`docker-compose.yml`. Caddy expands an unset `{{env}}` to the empty string, so
-this renders a live link to nowhere rather than failing.
-
-From off-network:
+**Rewritten for D34.** The tiles used to carry a server-rendered `data-lan`
+override so a local client went to `<lan-ip>:<port>` instead of hairpinning; the
+Manage chips carried server-rendered `ADMIN_HOST:<port>` hrefs. Both are gone.
+Every link is now `https://<data-sub>.<host-the-page-was-served-from>`, built by
+`app.js`, and the page reads no environment at all.
 
 ```bash
-curl -s https://<domain>/ | grep -c 'data-lan'            # 0
+curl -s https://<domain>/ | grep -c 'data-lan'                 # 0 — removed
+curl -s https://<domain>/ | grep -oE '\{\{env "[A-Z_]+"\}\}'   # nothing
+curl -s https://<domain>/ | grep -c 'href="#"'                 # 11 — JS fills these
 ```
 
-Then in a LAN browser, which is the only place the last two can be checked:
+The `href="#"` count is the tell: eleven links (two tiles, nine chips) ship with
+a placeholder and are rewritten on load. `app.js` is a plain synchronous script
+at the end of `<body>`, not `defer`, precisely so they are never visible and
+clickable while still pointing at `#`.
 
-- both tiles navigate to `http://<lan-ip>:<port>` and the app loads
-- both tiles still show a **green dot**
+Then in a LAN browser, which is the only place the rest can be checked:
 
-The dots are the subtle one. They are probing the *public* name while the link
-points at the LAN — deliberately, because an https page cannot fetch an http URL
-(D31). If they are grey or absent, the public path is broken even though the
-tiles work, which is exactly the split this arrangement exists to keep visible.
+- every tile and chip navigates to `https://<name>.<domain>` and the app loads
+- **every dot is green**
+
+The dots are no longer the subtle case they were under D31. Because every link
+is https on a real certificate, `href` and the probe URL are the same again — so
+a green dot now attests to the link beneath it, rather than to a public path the
+link did not take. A grey dot means that specific name is not answering.
 
 - [ ] Passes
 

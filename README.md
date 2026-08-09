@@ -1,23 +1,29 @@
 # thorby-media
 
 Docker configuration for a single-box home media server: Jellyfin plus the *arr
-stack and qBittorrent. The household reaches it on a public domain; the admin
-apps are reachable only on the LAN or through a self-hosted WireGuard tunnel.
-Played on Apple TV via Infuse.
+stack and qBittorrent. Nothing is reachable from the internet: every service is
+served by name over HTTPS on the LAN, and from anywhere else through a
+self-hosted WireGuard tunnel. Played on Apple TV via Infuse.
 
 Full requirements are in [`docs/spec.md`](docs/spec.md). This README is the
 operator's guide: how to bring it up, configure it in the right order, and grow
 it later.
 
-> **Status.** All deliverables are implemented. Hardware transcoding, Let's
-> Encrypt issuance, the router port forwards, UFW and `DOCKER-USER`, the
-> fail2ban web jails, smartd delivery, and unattended boot are **untested on
-> this hardware** — work through
-> [`docs/verification.md`](docs/verification.md) during bring-up.
+> **Status.** Deployed and running since 9 August 2026. `validate.sh` passes
+> 32, `audit-auth.sh` passes 43, all three hardlink runs pass, and twelve
+> production certificates are issued over DNS-01.
 >
-> Lidarr, Cleanuparr and the landing page's LAN-address tiles are newer than
-> even that, and have never been started anywhere. Checklist items 3, 12a, 14
-> and 15 cover them.
+> **The access model changed during bring-up.** There is no public door: the
+> router forwards the WireGuard port and nothing else, every name resolves to
+> the box's LAN address, and the nine admin apps are now proxied behind a
+> private-only guard rather than not routed at all. Read D33, D34 and D35 in
+> [`docs/decisions.md`](docs/decisions.md) before changing anything about
+> exposure — several statements elsewhere in this file are superseded by them.
+>
+> Still unverified: unattended boot after a power cut, smartd delivery, the
+> fail2ban web jails, Cleanuparr's deletion behaviour, and anything requiring a
+> vantage point outside the house — of which there is now none.
+> **Hardware transcoding is impossible on this board** (D35), not pending.
 
 ---
 
@@ -30,10 +36,11 @@ so that downloads and the library sit on one filesystem and Sonarr/Radarr import
 by hardlink instead of copying. Both download protocols land under that root
 (`torrents/` and `usenet/`, siblings of `media/`), so imports hardlink whichever
 one a release came from. Container config lives separately on the SSD
-under `/opt/mediaserver`. Caddy is the sole entry point from the internet and
-serves exactly three names — the landing page, Jellyfin and Jellyseerr; the
-nine admin apps have no route through it and are reached at `<lan-ip>:<port>`,
-on the LAN or over WireGuard (spec §5.1, decisions.md D25, D26). The `/data` bind
+under `/opt/mediaserver`. Caddy serves all twelve names on real certificates
+obtained over DNS-01, and every one of them resolves to the box's LAN address —
+the household reaches them directly, everyone else brings up the tunnel first.
+The nine admin apps are proxied behind a guard that refuses any client outside
+RFC1918 (decisions.md D33, D34). The `/data` bind
 mount is deliberate indirection: adding disks later means swapping it for a
 mergerfs pool with no container changes and no library rescan.
 
@@ -44,50 +51,65 @@ mergerfs pool with no container changes and no library rescan.
 The target machine, per spec §1–§2:
 
 - Debian 13 (Trixie), minimal install, SSH enabled, static IP or DHCP reservation
-- BIOS: integrated graphics enabled and set as primary adapter, onboard WiFi
-  disabled, **Restore on AC Power Loss: Power On**, Fast Boot disabled
+- BIOS: **Restore on AC Power Loss: Power On**, Fast Boot disabled. Integrated
+  graphics enabled too, where the board allows it — this one does not (D35)
 - Docker from Docker's official repository — not Debian's `docker.io`
 - No VPN client to install: remote administration is the `wg-easy` container in
   this stack, which comes up with everything else
 ### DNS
 
-Four A records, all pointing at the WAN address. Three are the names Caddy
-issues certificates for; the fourth is what WireGuard peers dial.
+Three records, all **DNS-only — never proxied** (grey cloud on Cloudflare).
 
-| Record | Purpose | Set in |
+| Record | Points at | Purpose |
 |---|---|---|
-| `media.thorby.tech` | landing page | `PUBLIC_DOMAIN` |
-| `jellyfin.media.thorby.tech` | Jellyfin | derived from `PUBLIC_DOMAIN` |
-| `seerr.media.thorby.tech` | Jellyseerr | derived from `PUBLIC_DOMAIN` |
-| `vpn.thorby.tech` | the tunnel endpoint | `WG_HOST` |
+| `media.thorby.tech` | the box's **LAN** address | landing page (`PUBLIC_DOMAIN`) |
+| `*.media.thorby.tech` | the box's **LAN** address | every service; one wildcard covers all twelve |
+| `vpn.thorby.tech` | the **WAN** address | the tunnel endpoint (`WG_HOST`) |
+
+Only the last one points at the internet. The other two resolve to a private
+address, which is useless to anyone who looks them up from outside and resolves
+correctly on the LAN and over the tunnel alike — that is the whole of D33's
+addressing. The wildcard means adding a service never touches DNS again; a
+wildcard does not cover the apex, which is why `media.thorby.tech` has its own.
+
+The proxy must be off. Cloudflare only proxies wildcards on Enterprise, will not
+proxy to a private address, and proxying video breaches its terms in any case.
+`vpn.thorby.tech` must be grey for a more basic reason: Cloudflare cannot proxy
+WireGuard's UDP at all, so an orange cloud there hands peers a Cloudflare
+address and the tunnel never establishes.
 
 `WG_HOST` is a name rather than a bare IP so a changed WAN address is one DNS
-edit instead of reissuing every peer config. No record exists for any admin app,
-and that absence is one of the three mechanisms keeping them off the internet
-(spec §5.3) — do not add one.
+edit instead of reissuing every peer config. With a dynamic WAN address it needs
+a DDNS updater; this box has a static one.
 
-**Check NAT hairpin.** Inside the house those names resolve to the WAN address,
-so reaching them requires the router to loop a LAN client back through its own
-public IP. Plenty of consumer routers do not, which produces the most confusing
-possible failure: the domain works from a phone on cellular and times out from
-the sofa. Test it before the household does. If it fails, add a **local DNS
-override** on the router mapping the three `media.thorby.tech` names to
-`CADDY_BIND_ADDR`. The Let's Encrypt certificate still validates — the name is
-what it is issued for, not the address behind it.
+**Hairpin NAT is not a concern** and was in earlier revisions of this file. The
+names resolve to the LAN address, so no packet leaves the house and there is
+nothing for the router to loop back.
 
 ### Router
 
-Forward to the box's LAN address, and nothing else:
+Forward exactly one thing to the box's LAN address:
 
-- TCP **80 and 443** — both; Let's Encrypt validates over 80 and will not
-  issue a certificate without it
 - UDP **`WG_PORT`** (51820) — the WireGuard tunnel
 
-Never forward `WG_UI_PORT`; the wg-easy admin UI is LAN and tunnel only. If the
-router's own admin interface is on 80 or 443, move it first.
+**Not 80, not 443.** Certificates come from DNS-01 against the Cloudflare zone
+(`caddy/Dockerfile`), which needs no inbound path — Caddy writes a TXT record
+and Let's Encrypt reads it. `PUBLIC_HTTP=false` in `.env` is what keeps those
+ports shut, and `setup.sh` actively deletes the rules if an earlier run opened
+them.
 
-Confirm the iGPU is alive before going further — `vainfo` must list H.264 and
-HEVC entrypoints. If `/dev/dri` does not exist, it is disabled in BIOS.
+Never forward `WG_UI_PORT`; the wg-easy admin UI is reached at
+`wg.{$PUBLIC_DOMAIN}` or on the LAN address.
+
+You also need a **Cloudflare API token** — My Profile → API Tokens → "Edit zone
+DNS" template, scoped to this zone alone — in `CF_API_TOKEN`. It can write
+records in that one zone and nothing else, so a leak costs the zone's DNS rather
+than the account.
+
+**Hardware transcoding does not apply to this box** (D35). The board has no
+display outputs and therefore no IGD menu, so Quick Sync cannot be enabled and
+`vainfo` will report nothing useful. Skip that check; it is waiting on an Arc
+A310, which will need no configuration change when it arrives.
 
 ---
 
@@ -142,8 +164,10 @@ smartd, sets UFW rules, and prints the values you need for the next step.
 | Variable | Where it comes from |
 |---|---|
 | `RENDER_GID` | `getent group render` |
-| `BIND_ADDR` | `127.0.0.1` for now — widened in step 7, once the wizards are done |
-| `CADDY_BIND_ADDR` | the LAN address the router forwards 80/443 to |
+| `BIND_ADDR` | `127.0.0.1`, and it stays there — every app is reached through Caddy (D34) |
+| `CADDY_BIND_ADDR` | the LAN address Caddy binds 80/443 to |
+| `PUBLIC_HTTP` | `false` — leave it, unless you deliberately want a public door |
+| `CF_API_TOKEN` | Cloudflare token, Zone:DNS:Edit on this zone, for the DNS-01 challenge |
 | `PUBLIC_DOMAIN` | your domain, e.g. `media.example.com` |
 | `ACME_EMAIL` | contact address for Let's Encrypt expiry warnings |
 | `ADMIN_HOST` | same LAN address — where the Manage links point |
@@ -169,15 +193,17 @@ editing to apply the firewall change.
 
 **Prove the certificates against staging first.** Uncomment `CADDY_ACME_CA` in
 `.env` so the first issuance goes to Let's Encrypt's staging directory. Two
-things are likely to be wrong on a first attempt — port 80 not actually
-forwarded, and a DNS record that has not propagated — and neither can be found
+thing most likely to be wrong on a first attempt is the Cloudflare token —
+missing `Zone:DNS:Edit`, or scoped to the wrong zone — and it cannot be found
 except by trying. Production allows five failed validations per hostname per
 hour; staging does not care. Staging issues from an untrusted root, so a browser
 certificate warning is the expected result and means everything else worked.
 Comment the variable out again and `docker compose restart caddy` to switch to
 real certificates.
 
-**4. Verify the iGPU** before starting anything:
+**4. Skip the iGPU check on this box** (D35). The board has no display outputs
+and no IGD menu in firmware, so Quick Sync cannot be enabled. On hardware where
+it can, this is the gate before starting anything:
 
 ```bash
 vainfo | grep -Ei 'h264|hevc'
@@ -553,12 +579,18 @@ alerting path that has never been tested is not an alerting path.
 
 **Security posture**, restated because it is easy to erode:
 
-- Only 80 and 443 are forwarded, and Caddy answers on them for three names
-- The nine admin apps have no route, no public DNS record, and no path through
-  `DOCKER-USER` — three independent reasons the internet cannot reach them
-- UDP `WG_PORT` is forwarded too, and answers nothing without a valid key. The
-  wg-easy admin UI on `WG_UI_PORT` is never forwarded
-- Admin access is WireGuard plus `<lan-ip>:<port>`
+- **Only UDP `WG_PORT` is forwarded.** Nothing answers an unauthenticated probe,
+  so there is no reachable HTTP surface from the internet at all
+- Every name resolves to the box's LAN address, so the records are useless to
+  anyone who looks them up from outside
+- The nine admin apps *are* routed now, and `admin_only` is what keeps them
+  private — one snippet where there used to be three independent mechanisms
+  (D34). `validate.sh` asserts no block can exist without it. **If you ever set
+  `PUBLIC_HTTP=true`, that snippet is all that stands between the internet and
+  arbitrary command execution on qBittorrent and SABnzbd**
+- `BIND_ADDR` stays on loopback: no admin port is published on the LAN at all
+- The wg-easy admin UI is reached at `wg.{$PUBLIC_DOMAIN}`, never forwarded. The
+  one hole in "ufw filters that port" is Docker's own pool, so Caddy can proxy it
 - The *arr UIs, qBittorrent and SABnzbd are not built for hostile exposure and
   must never reach the internet. qBittorrent's external-program setting and
   SABnzbd's post-processing scripts are both arbitrary command execution

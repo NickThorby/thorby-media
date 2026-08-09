@@ -1131,6 +1131,124 @@ of DNS-01; and spec §5.3's exposure model. D26 is reaffirmed, not superseded.
 
 ---
 
+## D34. The admin apps get names, behind a private-only guard
+
+All nine are routed through Caddy now — `sonarr.media.thorby.tech` and the rest,
+on real certificates, in `caddy/admin.caddy`. They were deliberately unrouted
+for the whole life of this repo, so this is the entry to read before changing
+anything about exposure.
+
+**Why it became defensible.** D25's exclusion was three mechanisms deep: no
+route, no DNS record, no path through `DOCKER-USER`. All three were defending
+against a Caddy that answered the internet. D33 closed that door, so a route
+here is unreachable from outside for as long as it stays closed.
+
+**Why "for as long as it stays closed" is the whole risk.** Set `PUBLIC_HTTP` to
+true, forward 80/443, and every one of those blocks would answer the internet —
+including qBittorrent and SABnzbd, which are arbitrary command execution by
+design, and Cleanuparr, which holds credentials for both. Pointing the records
+at a private address does not help: that stops discovery, not a deliberate
+request carrying a forged `Host`.
+
+So the control moved into Caddy. Every block imports `admin_only`, which 403s
+any client outside RFC1918 before the proxy runs. **One snippet now carries what
+three independent mechanisms carried before.** That is a real downgrade, taken
+knowingly, and it is mechanical rather than careful only because `validate.sh`
+asserts three things: that no block in `admin.caddy` can exist without importing
+the guard, that the guard's ranges equal `private_only`'s, and that the Manage
+chips match the routes. `sites.caddy` is still forbidden from mentioning any of
+those names, so which file a block lives in answers whether the internet could
+ever reach it.
+
+**Handler order is load-bearing.** `respond` sorts before `reverse_proxy` in
+Caddy's directive order, so the 403 runs first. Verified on the target by
+reading `caddy adapt` output rather than trusting the documentation, because if
+that order ever inverted the guard would still be present, still be asserted by
+`validate.sh`, and do nothing.
+
+**What it bought, beyond names.** Three things fell out that were not the
+motivation:
+
+- *`BIND_ADDR` stays on loopback.* Caddy reaches every app over the compose
+  bridge by container name, so no admin port is published on the LAN at all.
+  D20's staged widening is not a stage any more, it is the destination, and
+  `validate.sh`'s check was inverted to match. `DOCKER-USER` now defends an
+  empty room, which is the right shape for it to be in.
+- *The landing page reads no environment.* Ten port variables came off the caddy
+  service; every link is built client-side from `data-sub` and the host that
+  served the page.
+- *D24's broken dots work.* D24 recorded that the Manage probes could never
+  fire, because an https page cannot fetch `http://<lan-ip>:<port>` — blocked as
+  active mixed content. With every link https on a real certificate, `href` and
+  probe are the same URL again, and a dot attests to the link beneath it. D31's
+  `data-lan` mechanism was removed for the same reason.
+
+**Two things it broke, both found by requesting all eleven names on the target
+rather than by reading.** SABnzbd 403s any `Host` it has not been told about —
+even `Host: sabnzbd` — so the proxy name went into `host_whitelist`. And wg-easy
+runs with host networking, making it the one upstream Caddy cannot name by
+container: its packet leaves the bridge with a 172.x source, hits the host's
+INPUT chain, and default-deny drops it. `setup.sh` now permits Docker's pool to
+`WG_UI_PORT` specifically.
+
+That last rule narrows a claim spec §5.3 made. It said `ufw default deny
+incoming` genuinely filters that port. It now filters it for everything except
+containers on this box, so a compromised container can reach the wg-easy login
+page it previously could not. It still has to get past a login `audit-auth.sh`
+asserts is enforced, and a container that can already reach the *arr APIs is
+past caring about this one.
+
+**Supersedes, in part:** invariant 4's "no route" as the operative mechanism;
+D20's staged `BIND_ADDR` widening; D31's `data-lan` override; and D24's
+amendment that the Manage dots cannot fire.
+
+---
+
+## D35. Quick Sync is impossible on this board; an Arc A310 is the plan
+
+The i7-8700K has UHD 630 and the spec is built around it — `/dev/dri`,
+`RENDER_GID`, `group_add`, VAAPI in Jellyfin. None of it can be used here.
+
+**The finding.** The MSI Z370 GODLIKE GAMING (MS-7A98) has **no display outputs
+on the rear panel at all**, and MSI ships no Integrated Graphics Configuration
+menu on such boards — there is no `IGD Multi-Monitor` setting anywhere in the
+firmware. Walked the entire Advanced tree: PCI, ACPI, Integrated Peripherals,
+USB, Power Management, Windows OS Configuration, Wake Up Events, Secure Erase+.
+Corroborated from the box: nothing at PCI `00:02.0`, and the sole DRM device is
+the GTX 980 Ti under `nouveau`.
+
+So this is not a BIOS visit that was never made. It is a capability the board
+does not expose.
+
+**Why the 980 Ti is not the answer.** GM200 is Maxwell 2nd-gen: NVENC does
+H.264 only, with **no HEVC encode and no HEVC hardware decode** — those arrived
+on GM206, a smaller chip of the same generation. On a mostly-HEVC library it
+would decode in software and encode to H.264, in exchange for taking on the
+proprietary driver, `nvidia-container-toolkit`, and compose changes that
+contradict the LinuxServer VAAPI design used everywhere else here.
+
+**The plan is an Intel Arc A310**, and the reason it is the right answer is that
+it changes nothing: it speaks VAAPI through `/dev/dri`, `RENDER_GID` stays 992,
+`docker-compose.yml` already passes the device, and `setup.sh` already puts the
+media user in `render`. It also has display outputs, so it replaces the 980 Ti
+rather than joining it — dropping a 250 W card for roughly 75 W and unloading
+nouveau.
+
+**Deferred, not urgent, and the reason is in spec §4.2.** Infuse direct-plays
+nearly everything, so at home the CPU is idle and transcoding is rarely invoked.
+What changed is remote: under D33 everyone arrives over WireGuard, so remote
+playback pulls the original bitrate unless Jellyfin transcodes down — and a 4K
+remux is 60–80 Mbps against a residential uplink. Software transcoding a 4K HEVC
+on six cores is roughly one stream. That is the pressure that will eventually
+buy the card.
+
+**Verification items 1 and 2 are marked N/A rather than pending**, and item 2
+gained a check by PCI vendor. `/dev/dri/renderD128` exists today and is passed
+into Jellyfin, so the obvious check *passes* while transcoding is impossible —
+exactly the silent success that file exists to catch.
+
+---
+
 ## Open
 
 Each of these blocks or shapes a deliverable. Answers go here once settled.

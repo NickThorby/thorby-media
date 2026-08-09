@@ -293,20 +293,30 @@ That last `grep` must print `1`, not `2`.
 
 ## Current state
 
-All spec §9 deliverables are implemented. Before the Debian box existed, the
-stack was exercised on a macOS workstation with a compose override: all ten
-containers of the day started and reached healthy, every web UI responded
-directly and through Caddy, the hardlink test passed, and `audit-auth.sh` passed
-on all eight apps that then existed. **That override is gone**, and none of those
-results were obtained on this hardware — treat them as prior evidence that the
-design works, not as verification of this box.
+**Deployed and running on the Debian box since 9 August 2026.** All thirteen
+services are up; `validate.sh` passes 32, `audit-auth.sh` passes 43, and all
+three hardlink runs — torrent, usenet and music — report one inode and two
+names. Twelve production Let's Encrypt certificates are issued over DNS-01. The
+stack is provisioned end to end: root folders, both download clients on every
+*arr, Prowlarr's app links and indexers, Recyclarr's profiles, Jellyseerr wired
+to Radarr and Sonarr, and a verified Eweka connection.
 
-The stack is thirteen services now: that run predates wg-easy, Lidarr and
-Cleanuparr, so those three have never been started anywhere. Lidarr's
-provisioning in particular is unexercised — it is the only app reached over the
-`v1` API through helpers that were `v3`-only until D29.
+The first deployment found nine defects, all in `setup.sh`, `provision.sh` or
+`audit-auth.sh`, and all of one shape: **the script reported success for
+something that had not happened.** Worth knowing about as a class, because the
+next one will look the same. `systemctl enable smartd` fails on Debian's aliased
+unit and killed `setup.sh` before the firewall; Recyclarr publishes no `:latest`
+tag so `compose pull` aborted; em dashes in the `DOCKER-USER` block made every
+ufw re-run crash, because ufw writes its rules files as ASCII; `ufw --force
+enable` does not re-read `after.rules` when already active; the 80/443 close
+matched `ALLOW IN`, which only `ufw status verbose` prints; `provision.sh` set
+qBittorrent's password but never its username; it reconciled download client
+priority but not credentials, so a rotation left three apps stale; `audit-auth.sh`
+probed wg-easy on loopback when it binds `WG_UI_BIND`; and its Cleanuparr bypass
+check could never pass, because `jq`'s `//` substitutes on `false`.
 
-A security and architecture review in August 2026 is written up in
+Still true and still worth carrying: a security and architecture review in
+August 2026 is written up in
 [`docs/review-2026-08.md`](docs/review-2026-08.md), with what it changed and what
 was accepted rather than fixed. Two findings are worth carrying in your head
 because they invalidate reasonable-sounding assumptions:
@@ -317,11 +327,29 @@ because they invalidate reasonable-sounding assumptions:
   is applied at runtime without being written to disk, so the file disagrees
   with the running app. Ask the API (D18).
 
-Untested on this hardware — do not report these as working: hardware
-transcoding, Let's Encrypt issuance, the router port forwards, the UFW and
-`DOCKER-USER` rules (including the 80/443 returns), the fail2ban web jails,
-unattended-upgrades, smartd delivery, and unattended boot. Add to that everything
-from D29–D31: Lidarr's `v1` provisioning, Cleanuparr's deletion behaviour, and
-the landing page's LAN tiles, none of which have run anywhere. They are tracked
-in [`docs/verification.md`](docs/verification.md); open questions are in
+**Still not verified — do not report these as working.** Tracked in
+[`docs/verification.md`](docs/verification.md), open questions in
 [`docs/decisions.md`](docs/decisions.md).
+
+- **Hardware transcoding is impossible on this board**, not merely untested. No
+  display outputs means no IGD menu in the firmware, so Quick Sync cannot be
+  enabled; an Arc A310 is the plan (D35). Items 1 and 2 are marked N/A, and
+  item 2 checks the PCI vendor because `/dev/dri/renderD128` exists today, is
+  passed into Jellyfin, and is the nouveau node.
+- **Unattended boot after a power cut** (item 8) — needs the plug pulled. The
+  boot ordering of Docker against ufw has never been exercised here, and
+  `DOCKER-USER` is the whole of D19: check the chain is populated after a
+  reboot, not just that the file is right.
+- **smartd alert delivery** (item 6) — no `SMTP_HOST`, so nothing is sent.
+- **Everything off-network.** Under D33 nothing is forwarded but `WG_PORT`, so
+  there is no vantage point outside RFC1918 from which to reach Caddy. The
+  `@public` branch of `private_only` and the `admin_only` 403 are asserted
+  structurally — by `validate.sh` and by reading `caddy adapt` handler order —
+  and cannot be observed. If `PUBLIC_HTTP` is ever set true, item 12 becomes
+  testable and must be run *before* the forward is opened.
+- **fail2ban's web jails**, and the `jellyfin` jail stays disabled until
+  Jellyfin's Known Proxies is set to the compose bridge subnet.
+- **Cleanuparr's deletion behaviour** (D30) — it has read-write `/data` and the
+  library is not in the backup set. Enable one cleaner at a time.
+- **Usenet end to end.** The Eweka connection is verified, but nothing has been
+  imported through it yet.
