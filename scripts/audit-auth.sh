@@ -436,7 +436,13 @@ echo "wg-easy"
 if ! up wg-easy; then
   skip "wg-easy is not running"
 else
-  WG_URL="http://127.0.0.1:${WG_UI_PORT:-51821}"
+  # WG_UI_BIND, not loopback. Every other app in this file is probed on
+  # 127.0.0.1 because they are Docker publishes and BIND_ADDR always includes
+  # it. wg-easy is not: it runs with host networking and binds the single
+  # address in WG_UI_BIND, so loopback answers nothing and both checks below
+  # score 000 — which this script correctly refuses to read as a pass, and
+  # which looks exactly like wg-easy serving HTTPS without INSECURE=true.
+  WG_URL="http://${WG_UI_BIND:-127.0.0.1}:${WG_UI_PORT:-51821}"
 
   # v15 answers the session endpoint 401 when unauthenticated. If a future
   # version moves it, this reports 000/404 and fails loudly rather than passing
