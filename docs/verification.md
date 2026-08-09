@@ -325,7 +325,32 @@ written assuming UFW was what enforced it.
 
 ## 8. Machine boots unattended and all containers start after a hard power cut
 
-Not a graceful reboot — cut power at the wall, restore it, and touch nothing.
+**A graceful reboot is not the full test, but run it first** — it exercises the
+same race and it is the one that has actually bitten (D36). On this box Docker
+started three seconds before the WiFi associated, and two services that bind a
+specific address came up broken while reporting healthy.
+
+Measured after the D36 fix, 9 Aug 2026:
+
+```
+12:41:31  docker.service starts   <- ExecStartPre begins waiting for the address
+12:41:36  wlp10s0 associated      <- address appears
+12:41:43  dockerd "Starting up"   <- held 12s, then proceeded
+```
+
+All thirteen containers healthy, `docker port caddy` populated, 80/443/51821
+listening, every name answering, and container DNS working without a daemon
+restart. Check all of those, not just `docker compose ps` — the failure mode
+this fix addresses looked perfectly healthy in `ps`.
+
+Note the media disk came back as `/dev/sdb1` having been `/dev/sda1` on the
+previous boot. Device names shuffle; the fstab entries are by UUID for exactly
+that reason, and `findmnt` is the check.
+
+- [x] Graceful reboot — passes (9 Aug 2026)
+
+Then the real one. Not a graceful reboot — cut power at the wall, restore it,
+and touch nothing.
 
 ```bash
 uptime
