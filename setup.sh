@@ -956,7 +956,7 @@ ${end_marker}
 EOF
 )
 
-  local present=false current=""
+  local present=false current="" uptodate=false
   if grep -qF "$marker" "$rules"; then
     present=true
     current=$(awk -v b="$marker" -v e="$end_marker" '
@@ -966,61 +966,70 @@ EOF
     ' "$rules")
     if [[ "$current" == "$block" ]]; then
       ok "DOCKER-USER rules already present and current in $rules"
-      return 0
+      uptodate=true
     fi
   fi
 
-  # Rewritten rather than skipped when it differs. LAN_SUBNET and PUBLIC_DOMAIN
-  # are both routinely filled in after the first run — and report() ends by
-  # telling you to re-run once wg0 exists — so a write-once guard here would
-  # leave the stalest possible rules in place while every message said the
-  # script had succeeded.
-  if $DRY_RUN; then
-    local action=append
-    $present && action=rewrite
-    printf '  \033[36m[dry-run]\033[0m %s DOCKER-USER block in %s (LAN %s):\n' \
-      "$action" "$rules" "$LAN_SUBNET"
-    # Printed in full, in write_file's format, rather than as the one-line
-    # summary this used to be. These are the highest-consequence lines the
-    # script writes and a dry run is where they get read, so "a block was
-    # appended" hid the only thing worth checking.
-    while IFS= read -r line; do printf '      | %s\n' "$line"; done <<<"$block"
-    return 0
-  fi
+  # A current file is deliberately NOT an early return. The file says nothing
+  # about the kernel: restarting the Docker daemon re-creates DOCKER-USER, and
+  # it comes back empty until something loads after.rules into it. Returning
+  # here would skip the reload at the bottom and leave every published port
+  # unfiltered, while the line above reported the rules were in place.
+  if ! $uptodate; then
+    # Rewritten rather than skipped when it differs. LAN_SUBNET and PUBLIC_HTTP
+    # are both routinely changed after the first run -- and report() ends by
+    # telling you to re-run once wg0 exists -- so a write-once guard here would
+    # leave the stalest possible rules in place while every message said the
+    # script had succeeded.
+    if $DRY_RUN; then
+      local action=append
+      $present && action=rewrite
+      printf '  \033[36m[dry-run]\033[0m %s DOCKER-USER block in %s (LAN %s):\n' \
+        "$action" "$rules" "$LAN_SUBNET"
+      # Printed in full, in write_file's format, rather than as the one-line
+      # summary this used to be. These are the highest-consequence lines the
+      # script writes and a dry run is where they get read, so "a block was
+      # appended" hid the only thing worth checking.
+      while IFS= read -r line; do printf '      | %s\n' "$line"; done <<<"$block"
+      return 0
+    fi
 
-  # Belt and braces against the failure configure_firewall repairs above: if
-  # this block ever picks up a non-ASCII character again, fail here with the
-  # cause rather than in ufw's traceback on somebody's next run.
-  if LC_ALL=C grep -qP '[^\x00-\x7F]' <<<"$block"; then
-    die "The DOCKER-USER block contains non-ASCII. ufw writes after.rules with
+    # Belt and braces against the failure configure_firewall repairs above: if
+    # this block ever picks up a non-ASCII character again, fail here with the
+    # cause rather than in ufw's traceback on somebody's next run.
+    if LC_ALL=C grep -qP '[^\x00-\x7F]' <<<"$block"; then
+      die "The DOCKER-USER block contains non-ASCII. ufw writes after.rules with
        an ascii codec and will refuse every later invocation. Keep this block
        plain ASCII, whatever the prose style elsewhere."
-  fi
+    fi
 
-  cp "$rules" "${rules}.bak"
-  ok "backed up $rules to ${rules}.bak"
+    cp "$rules" "${rules}.bak"
+    ok "backed up $rules to ${rules}.bak"
 
-  local tmp
-  tmp=$(mktemp)
-  awk -v b="$marker" -v e="$end_marker" '
-    $0 == b { inblock = 1; next }
-    inblock { if ($0 == e) inblock = 0; next }
-    { print }
-  ' "$rules" > "$tmp"
+    local tmp
+    tmp=$(mktemp)
+    awk -v b="$marker" -v e="$end_marker" '
+      $0 == b { inblock = 1; next }
+      inblock { if ($0 == e) inblock = 0; next }
+      { print }
+    ' "$rules" > "$tmp"
 
-  # Written back through the existing file rather than moved over it, so the
-  # mode and ownership ufw expects on after.rules survive. The command
-  # substitution eats trailing newlines, which normalises the blank line the
-  # strip above leaves behind — otherwise repeated rewrites accumulate them.
-  printf '%s\n\n%s\n' "$(< "$tmp")" "$block" > "$rules"
-  rm -f "$tmp"
+    # Written back through the existing file rather than moved over it, so the
+    # mode and ownership ufw expects on after.rules survive. The command
+    # substitution eats trailing newlines, which normalises the blank line the
+    # strip above leaves behind -- otherwise repeated rewrites accumulate them.
+    printf '%s\n\n%s\n' "$(< "$tmp")" "$block" > "$rules"
+    rm -f "$tmp"
 
-  local verb="appended"
-  $present && verb="rewritten"
-  if [[ "${PUBLIC_HTTP:-false}" == "true" ]]; then
-    ok "DOCKER-USER rules ${verb} (wg0 + ${LAN_SUBNET} + public 80/443 in)"
-  else
-    ok "DOCKER-USER rules ${verb} (wg0 + ${LAN_SUBNET} in, rest dropped)"
+    local verb="appended"
+    $present && verb="rewritten"
+    if [[ "${PUBLIC_HTTP:-false}" == "true" ]]; then
+      ok "DOCKER-USER rules ${verb} (wg0 + ${LAN_SUBNET} + public 80/443 in)"
+    else
+      ok "DOCKER-USER rules ${verb} (wg0 + ${LAN_SUBNET} in, rest dropped)"
+    fi
+  elif $DRY_RUN; then
+    return 0
   fi
 
   # after.rules is read only when ufw loads its ruleset, and `ufw --force
