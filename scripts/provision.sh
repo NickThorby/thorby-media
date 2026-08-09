@@ -206,8 +206,15 @@ provision_qbittorrent() {
   #
   # autorun stays empty — "run external program on completion" is arbitrary
   # command execution by design.
+  # web_ui_username as well as the password. Setting only the password leaves
+  # the account named `admin` while every *arr is configured to log in as
+  # QBIT_USER, and qBittorrent answers that with a bare 401 — which Sonarr
+  # reports as "Unable to connect to qBittorrent", pointing at the host field.
+  # Invisible while QBIT_USER is left at the default `admin`, which is why it
+  # survived this long.
   qbt -X POST http://localhost:8080/api/v2/app/setPreferences \
     --data-urlencode "json={
+      \"web_ui_username\": \"${QBIT_USER}\",
       \"web_ui_password\": \"${QBIT_PASS}\",
       \"web_ui_host_header_validation_enabled\": false,
       \"web_ui_csrf_protection_enabled\": true,
@@ -218,7 +225,7 @@ provision_qbittorrent() {
       \"autorun_enabled\": false,
       \"autorun_program\": \"\"
     }" >/dev/null
-  ok "preferences set (password, save paths, preallocation, host-header validation off)"
+  ok "preferences set (login '${QBIT_USER}', save paths, preallocation, host-header validation off)"
 
   # Categories map to save paths under /data/torrents/ (spec §6 step 1). This
   # list has to match the category names the *arrs are given further down —
