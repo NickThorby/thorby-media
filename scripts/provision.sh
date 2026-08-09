@@ -400,8 +400,14 @@ provision_bazarr() {
   local current
   current=$(docker compose exec -T bazarr \
     sh -c "grep -A4 '^auth:' /config/config/config.yaml | grep '  type:' | awk '{print \$2}'" | tr -d '\r')
-  if [[ "$current" == "form" ]]; then
-    skip "web UI login already enabled"
+  # ARR_AUTH_FORCE rotates the password here too, for the same reason it exists
+  # on the *arrs: the stored password cannot be read back, so "auth is already
+  # form" is the only thing this can check, and it is true both when the
+  # password matches BAZARR_PASS and when it does not. Without the flag a
+  # rotation in .env would be skipped in silence -- the shape of failure this
+  # script has now produced twice.
+  if [[ "$current" == "form" && "${ARR_AUTH_FORCE:-0}" != "1" ]]; then
+    skip "web UI login already enabled (ARR_AUTH_FORCE=1 to rotate the password)"
     return 0
   fi
 
@@ -413,7 +419,11 @@ provision_bazarr() {
 
   # Bazarr only picks the change up on restart.
   docker compose restart bazarr >/dev/null 2>&1
-  ok "web UI login enabled for '${BAZARR_USER:-admin}' (bazarr restarted)"
+  if [[ "$current" == "form" ]]; then
+    ok "web UI password rotated for '${BAZARR_USER:-admin}' (bazarr restarted)"
+  else
+    ok "web UI login enabled for '${BAZARR_USER:-admin}' (bazarr restarted)"
+  fi
 }
 
 # ─── Jellyseerr ──────────────────────────────────────────────────────────────
