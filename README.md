@@ -14,6 +14,10 @@ it later.
 > fail2ban web jails, smartd delivery, and unattended boot are **untested on
 > this hardware** — work through
 > [`docs/verification.md`](docs/verification.md) during bring-up.
+>
+> Lidarr, Cleanuparr and the landing page's LAN-address tiles are newer than
+> even that, and have never been started anywhere. Checklist items 3, 12a, 14
+> and 15 cover them.
 
 ---
 
@@ -28,7 +32,7 @@ by hardlink instead of copying. Both download protocols land under that root
 one a release came from. Container config lives separately on the SSD
 under `/opt/mediaserver`. Caddy is the sole entry point from the internet and
 serves exactly three names — the landing page, Jellyfin and Jellyseerr; the
-seven admin apps have no route through it and are reached at `<lan-ip>:<port>`,
+nine admin apps have no route through it and are reached at `<lan-ip>:<port>`,
 on the LAN or over WireGuard (spec §5.1, decisions.md D25, D26). The `/data` bind
 mount is deliberate indirection: adding disks later means swapping it for a
 mergerfs pool with no container changes and no library rescan.
@@ -222,8 +226,11 @@ Jellyseerr — see steps 8 and 9 of the configuration sequence below. Re-run
 ./scripts/test-hardlinks.sh
 ```
 
-`audit-auth.sh` must pass before you widen `BIND_ADDR`. It asks each running app
-what it actually enforces, rather than trusting that a wizard was completed.
+`audit-auth.sh` must pass before you widen `BIND_ADDR`. It asks each of the
+eleven apps what it actually enforces, rather than trusting that a wizard was
+completed. Two of them — wg-easy and Cleanuparr — have no way to pin their
+credentials from the environment, so this script is not a formality for those
+two, it is the only thing that would ever tell you.
 
 Only then set `BIND_ADDR` to `0.0.0.0` (or the LAN IP) and
 `docker compose up -d`.
@@ -263,7 +270,7 @@ The temporary admin password is printed to the container log on first start:
 - Change the credentials immediately (Settings → Web UI)
 - Leave **Run external program on torrent completion** empty — it is arbitrary
   command execution
-- Create categories `movies`, `tv`, and `anime`, with save paths under
+- Create categories `movies`, `tv`, `anime` and `music`, with save paths under
   `/data/torrents/` respectively
 - Enable preallocation
 - Put incomplete downloads in a subfolder of the *same* path — never a different
@@ -284,13 +291,14 @@ add indexers directly in Sonarr or Radarr; Prowlarr owns them.
 
 ### 3. Prowlarr → apps
 
-Settings → Apps, add Sonarr and Radarr with their API keys. From this point
-indexers sync automatically and are never configured in the *arr apps directly.
+Settings → Apps, add Sonarr, Radarr and Lidarr with their API keys. From this
+point indexers sync automatically and are never configured in the *arr apps
+directly.
 
-### 4. Sonarr and Radarr → download clients
+### 4. Sonarr, Radarr and Lidarr → download clients
 
 Add **both** clients in each app, with the category names from step 1 (`tv` and
-`anime` in Sonarr, `movies` in Radarr):
+`anime` in Sonarr, `movies` in Radarr, `music` in Lidarr):
 
 - **SABnzbd** at priority **1** — Usenet is preferred where both have a release
 - **qBittorrent** at priority **2**
@@ -305,6 +313,12 @@ practice Usenet carries TV and film while torrents carry anime.
 
 - Sonarr: `/data/media/tv` **and** `/data/media/anime`
 - Radarr: `/data/media/movies`
+- Lidarr: `/data/media/music`
+
+Lidarr is fussier than the other two here: its root folder requires a default
+quality **and** metadata profile, and the API rejects the create without both.
+`provision.sh` looks up whichever exist rather than assuming ids, but if it ran
+before Lidarr finished its first start it will say so and skip — re-run it.
 
 ### 6. Verify hardlinking — do not skip
 
@@ -323,11 +337,34 @@ importing anything else. Full procedure in
 ### 7. Bazarr — `:6767`
 
 Connect to Sonarr and Radarr, then configure subtitle providers and languages.
+It has nothing to do with Lidarr — subtitles are not a music problem.
+
+### 7a. Cleanuparr — `:11011`
+
+**Open this one before anyone else does.** It has a first-run setup flow and no
+way to pin credentials ahead of time, so the first visitor becomes the
+administrator — the same window `provision.sh` closes for the *arrs but cannot
+close here (decisions.md D30).
+
+- Create the admin account. That shuts the wizard.
+- Settings → General → Authentication: leave **Disable Auth for Local Addresses
+  off**. Its trusted ranges include `172.16.0.0/12`, which is the Docker bridge,
+  so it exempts every container in this stack rather than just the LAN.
+- Add qBittorrent at `http://qbittorrent:8080` and the four *arr apps.
+- Leave the **Download Cleaner** and **Unlinked Download** handling disabled to
+  begin with. Cleanuparr has write access to `/data`, and the media library is
+  not in the backup set. Turn them on one at a time once you have watched the
+  Queue Cleaner behave — [`docs/verification.md`](docs/verification.md) item 14
+  is the procedure.
+
+It cleans qBittorrent only; there is no SABnzbd support. Since SABnzbd is the
+priority-1 client, the queue carrying most TV and film is not covered by it.
 
 ### 8. Jellyfin — `:8096`
 
-Create three libraries: `/data/media/movies`, `/data/media/tv`, and
-`/data/media/anime` as its own library. Then Dashboard → Playback:
+Create four libraries: `/data/media/movies`, `/data/media/tv`,
+`/data/media/anime` as its own library, and `/data/media/music`. Then
+Dashboard → Playback:
 
 - Hardware acceleration: **VAAPI**
 - Device: `/dev/dri/renderD128`
@@ -361,7 +398,9 @@ Run the wizard once at `http://localhost:5055/setup`:
   not `localhost` (that is Jellyseerr itself) and not the full URL (some fields
   reject it with `INVALID_URL`). Leave **URL Base blank**; it is only for apps
   served under a subpath.
-- Select the three libraries
+- Select the libraries. Music is optional here and does nothing: Jellyseerr is a
+  film and TV product and cannot request from Lidarr, so music has no
+  household-facing request path at all. Adding an artist stays your job.
 - **Stop there** — skip the Radarr and Sonarr steps
 
 Then `./scripts/provision.sh` connects Radarr and Sonarr with the right root
@@ -377,10 +416,19 @@ Request, and it appears.
 landing page — Watch and Request — and those two are the only things anyone else
 needs. No VPN, no app, no port to remember.
 
-The *Manage* section, with the seven admin tools, renders **only for clients on
+The *Manage* section, with the nine admin tools, renders **only for clients on
 the LAN or the tunnel**. That is a courtesy, not a control: those apps are
 unreachable from the internet because they have no route in `caddy/sites.caddy`
 and no DNS record, not because a link is hidden.
+
+The same LAN-or-tunnel test decides where the two public tiles point. Inside the
+house they go straight to `http://<lan-ip>:8096` and `:5055` rather than out to
+the domain and back in through the router; from anywhere else they use the public
+names. One consequence worth knowing before it surprises you: the status dots
+next to those tiles are always probing the *public* name, even when the link
+beside them points at the LAN — an HTTPS page cannot fetch an HTTP address, so
+the alternative was no dots at all indoors. A green dot therefore says the public
+route is up, not that the LAN link works (decisions.md D31).
 
 The page is three static files in `caddy/site/`, served by the Caddy that is
 already proxying the stack. Because it is a bind mount read per request, editing
@@ -408,11 +456,13 @@ control (decisions.md D26).
 Peers get a split tunnel: only the LAN and the WireGuard subnet route through
 it, so ordinary browsing is unaffected and the tunnel is cheap enough to leave
 on permanently. That is what makes one address work in both places, which the
-landing page relies on — it templates a single `ADMIN_HOST` and cannot render a
-different link per network (decisions.md D26).
+landing page relies on — it templates a single `ADMIN_HOST` and cannot tell a
+tunnel client from a LAN one (decisions.md D26). It *can* tell either of them
+from a client on the internet, which is what the public tiles use (D31).
 
 This is why the admin apps do not need a public name, and why adding one would
-be a mistake: qBittorrent and SABnzbd both run arbitrary commands by design.
+be a mistake: qBittorrent and SABnzbd both run arbitrary commands by design, and
+Cleanuparr holds the credentials for both.
 
 ### 10. Infuse
 
@@ -490,7 +540,7 @@ alerting path that has never been tested is not an alerting path.
 **Security posture**, restated because it is easy to erode:
 
 - Only 80 and 443 are forwarded, and Caddy answers on them for three names
-- The seven admin apps have no route, no public DNS record, and no path through
+- The nine admin apps have no route, no public DNS record, and no path through
   `DOCKER-USER` — three independent reasons the internet cannot reach them
 - UDP `WG_PORT` is forwarded too, and answers nothing without a valid key. The
   wg-easy admin UI on `WG_UI_PORT` is never forwarded

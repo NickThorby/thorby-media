@@ -17,7 +17,13 @@
 #     login.
 #   - wg-easy configures itself from INIT_* on first start only, so unlike the
 #     *arrs its authentication is not re-asserted every time it comes up. This
-#     script is the compensating control (decisions.md D26).
+#     script is the compensating control (decisions.md D26). Cleanuparr is the
+#     same shape and worse — it has no INIT_* equivalent at all, so a wiped
+#     /config comes back with an open setup wizard (D30).
+#   - Cleanuparr has its own version of the DisabledForLocalAddresses trap,
+#     called "Disable Auth for Local Addresses", whose built-in trusted ranges
+#     include 172.16.0.0/12. That is Docker's default pool, so enabling it
+#     exempts the entire compose bridge rather than merely the LAN.
 #   - qBittorrent's "run external program on completion" is arbitrary command
 #     execution by design (spec §5.3). provision.sh blanks it, and a UI edit can
 #     put it straight back.
@@ -51,10 +57,12 @@ set +a
 # an admin session.
 SONARR_URL="http://127.0.0.1:${SONARR_PORT:-8989}"
 RADARR_URL="http://127.0.0.1:${RADARR_PORT:-7878}"
+LIDARR_URL="http://127.0.0.1:${LIDARR_PORT:-8686}"
 PROWLARR_URL="http://127.0.0.1:${PROWLARR_PORT:-9696}"
 JELLYFIN_URL="http://127.0.0.1:${JELLYFIN_PORT:-8096}"
 SEERR_URL="http://127.0.0.1:${SEERR_PORT:-5055}"
 SAB_URL="http://127.0.0.1:${SAB_PORT:-8085}"
+CLEANUPARR_URL="http://127.0.0.1:${CLEANUPARR_PORT:-11011}"
 # No BAZARR_URL: Bazarr serves its SPA shell at 200 whether or not you are
 # logged in, so an HTTP probe proves nothing. It is audited from its config.
 
@@ -139,9 +147,10 @@ audit_arr() {
 }
 
 echo
-echo "Sonarr / Radarr / Prowlarr"
+echo "Sonarr / Radarr / Lidarr / Prowlarr"
 audit_arr Sonarr   "$SONARR_URL"   "${SONARR_API_KEY:-}"   v3
 audit_arr Radarr   "$RADARR_URL"   "${RADARR_API_KEY:-}"   v3
+audit_arr Lidarr   "$LIDARR_URL"   "${LIDARR_API_KEY:-}"   v1
 audit_arr Prowlarr "$PROWLARR_URL" "${PROWLARR_API_KEY:-}" v1
 
 # ─── qBittorrent ─────────────────────────────────────────────────────────────
@@ -353,6 +362,58 @@ else
     bad "Jellyseerr: GET / returned 200 without a login"
   else
     ok "Jellyseerr: GET / redirects an anonymous request to the login page"
+  fi
+fi
+
+# ─── Cleanuparr ──────────────────────────────────────────────────────────────
+#
+# The second app in this stack whose authentication is asserted once and assumed
+# thereafter, for the same reason as wg-easy below: there is no environment
+# variable for it. The account is created through a setup flow and lives in
+# Cleanuparr's own database, so a wiped /config comes back with the wizard open
+# and the first visitor becomes the administrator — the same failure the *arrs
+# are protected from by D12 and D18, and which nothing but this check would
+# report (decisions.md D30).
+#
+# What a session on it is worth: Cleanuparr holds the qBittorrent credential and
+# every *arr API key, so it reaches the same arbitrary command execution spec
+# §5.3 is about, one step removed.
+
+echo
+echo "Cleanuparr"
+
+if ! up cleanuparr; then
+  skip "cleanuparr is not running"
+else
+  # /api/auth/status is deliberately anonymous — it is what the login page reads
+  # to decide what to draw — which makes it exactly the right thing to audit.
+  status=$(curl -fsS --max-time 8 "$CLEANUPARR_URL/api/auth/status" 2>/dev/null || echo '{}')
+
+  if [[ "$(jq -r '.setupCompleted // "unknown"' <<<"$status")" == "true" ]]; then
+    ok "Cleanuparr: setup completed — the account-creation flow is closed"
+  else
+    bad "Cleanuparr: setup is incomplete — the first visitor becomes the admin"
+    note "Open http://<lan-ip>:${CLEANUPARR_PORT:-11011} and create the account now."
+  fi
+
+  # The local-address bypass. Its built-in trusted ranges include 172.16.0.0/12,
+  # which is Docker's default pool — so switching this on does not merely trust
+  # the LAN, it hands an unauthenticated session to every container on the
+  # bridge. Precisely the shape of the DisabledForLocalAddresses trap in D18.
+  if [[ "$(jq -r '.authBypassActive // "unknown"' <<<"$status")" == "false" ]]; then
+    ok "Cleanuparr: local-address auth bypass is off"
+  else
+    bad "Cleanuparr: local-address auth bypass is ACTIVE"
+    note "Settings -> General -> Authentication. Its trusted ranges include the"
+    note "Docker bridge (172.16.0.0/12), so this exempts the whole stack."
+  fi
+
+  # Everything under /api/configuration is [Authorize]. The SPA shell at / is
+  # served at 200 either way, as Bazarr's is, so it proves nothing.
+  if [[ "$(code "$CLEANUPARR_URL/api/configuration/general")" == "401" ]]; then
+    ok "Cleanuparr: the configuration API rejects an unauthenticated request"
+  else
+    bad "Cleanuparr: GET /api/configuration/general did not return 401"
   fi
 fi
 

@@ -38,14 +38,19 @@
      only — so this is not an omission to be helpfully corrected later.
      These are decorative: plate tints, glows, dot rings. Never text, and never
      a border that carries meaning; #ffc230 and #00ccff both fail contrast. */
-  --b-jellyfin: #00a4dc;
-  --b-seerr:    #8d61eb;
-  --b-sonarr:   #00ccff;
-  --b-radarr:   #ffc230;
-  --b-prowlarr: #e66001;
-  --b-bazarr:   #c9cfdb;
-  --b-sab:      #ffb300;
-  --b-qbit:     #72b4f5;
+     Cleanuparr's is the one value here not lifted from a logo: its brand purple
+     is #430074, which is too dark to tint a plate that is already near-black,
+     so this is the same hue lightened until the tint reads. */
+  --b-jellyfin:   #00a4dc;
+  --b-seerr:      #8d61eb;
+  --b-sonarr:     #00ccff;
+  --b-radarr:     #ffc230;
+  --b-lidarr:     #009252;
+  --b-prowlarr:   #e66001;
+  --b-bazarr:     #c9cfdb;
+  --b-sab:        #ffb300;
+  --b-qbit:       #72b4f5;
+  --b-cleanuparr: #8b5cf6;
 
   /* Space — 4px base */
   --s-1: .25rem;  --s-2: .5rem;  --s-3: .75rem; --s-4: 1rem;
@@ -257,14 +262,16 @@ a { touch-action: manipulation; }
   transform: scale(var(--icon-scale, 1));
 }
 
-[data-sub="jellyfin"] { --brand: var(--b-jellyfin); --icon-scale: 1.06; }
-[data-sub="seerr"]    { --brand: var(--b-seerr); }
-[data-sub="sonarr"]   { --brand: var(--b-sonarr); }
-[data-sub="radarr"]   { --brand: var(--b-radarr); }
-[data-sub="prowlarr"] { --brand: var(--b-prowlarr); }
-[data-sub="bazarr"]   { --brand: var(--b-bazarr); }
-[data-sub="sab"]      { --brand: var(--b-sab);      --icon-scale: 1.05; }
-[data-sub="qbit"]     { --brand: var(--b-qbit); }
+[data-sub="jellyfin"]   { --brand: var(--b-jellyfin); --icon-scale: 1.06; }
+[data-sub="seerr"]      { --brand: var(--b-seerr); }
+[data-sub="sonarr"]     { --brand: var(--b-sonarr); }
+[data-sub="radarr"]     { --brand: var(--b-radarr); }
+[data-sub="lidarr"]     { --brand: var(--b-lidarr); }
+[data-sub="prowlarr"]   { --brand: var(--b-prowlarr); }
+[data-sub="bazarr"]     { --brand: var(--b-bazarr); }
+[data-sub="sab"]        { --brand: var(--b-sab);      --icon-scale: 1.05; }
+[data-sub="qbit"]       { --brand: var(--b-qbit); }
+[data-sub="cleanuparr"] { --brand: var(--b-cleanuparr); }
 
 /* ── The two tiles ──────────────────────────────────────────────────────── */
 
@@ -395,8 +402,9 @@ a { touch-action: manipulation; }
 
 .admin {
   display: grid;
-  /* 13rem lands on three columns at the 48rem shell, so six tools fill two
-     even rows. Narrower tracks give four-then-two, which reads as a mistake. */
+  /* 13rem lands on three columns at the 48rem shell, so nine tools fill three
+     even rows. Narrower tracks give four-then-four-then-one, which reads as a
+     mistake. Keep the tool count a multiple of three or accept a short row. */
   grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
   gap: var(--s-2);
   padding-top: var(--s-3);
@@ -490,6 +498,9 @@ a { touch-action: manipulation; }
 .tile:nth-child(2) { animation-delay: .17s; }
 .manage            { animation-delay: .26s; }
 
+/* One line per chip. An unenumerated chip falls through to delay 0 and arrives
+   ahead of the ones above it, which reads as a stutter rather than a stagger —
+   chips seven, eight and nine were doing exactly that. */
 .admin .chip { animation: rise var(--dur-2) var(--ease) backwards; }
 .admin .chip:nth-child(1) { animation-delay: .02s; }
 .admin .chip:nth-child(2) { animation-delay: .05s; }
@@ -497,6 +508,9 @@ a { touch-action: manipulation; }
 .admin .chip:nth-child(4) { animation-delay: .11s; }
 .admin .chip:nth-child(5) { animation-delay: .14s; }
 .admin .chip:nth-child(6) { animation-delay: .17s; }
+.admin .chip:nth-child(7) { animation-delay: .20s; }
+.admin .chip:nth-child(8) { animation-delay: .23s; }
+.admin .chip:nth-child(9) { animation-delay: .26s; }
 
 /* Anyone who has asked their OS to stop animating things means it. Transitions
    for feedback stay, but nothing moves on its own. */

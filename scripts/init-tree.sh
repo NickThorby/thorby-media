@@ -32,10 +32,10 @@ echo "Creating /data tree via the $SVC container (owner ${PUID}:${PGID})..."
 # hardlink rather than copy (spec §3.3).
 docker compose exec -T -e PUID="$PUID" -e PGID="$PGID" "$SVC" sh -c '
   set -e
-  for d in torrents/movies       torrents/tv       torrents/anime \
+  for d in torrents/movies       torrents/tv       torrents/anime       torrents/music \
            usenet/incomplete \
-           usenet/complete/movies usenet/complete/tv usenet/complete/anime \
-           media/movies          media/tv          media/anime; do
+           usenet/complete/movies usenet/complete/tv usenet/complete/anime usenet/complete/music \
+           media/movies          media/tv          media/anime          media/music; do
     mkdir -p "/data/$d"
   done
   chown -R "${PUID}:${PGID}" /data

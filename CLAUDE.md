@@ -49,15 +49,16 @@ requiring explicit justification.
    paths between the download client and the *arr apps are the single most
    common cause of "why won't it import", and of hardlinking degrading to a copy.
 2. **One filesystem for `torrents/`, `usenet/` and `media/`.** Hardlinks cannot
-   cross filesystems. If they are split, Sonarr/Radarr fall back to copying:
-   double disk usage, slow imports, and seeding breaks. Nothing warns you.
-   `scripts/test-hardlinks.sh` checks both download trees.
+   cross filesystems. If they are split, Sonarr/Radarr/Lidarr fall back to
+   copying: double disk usage, slow imports, and seeding breaks. Nothing warns
+   you. `scripts/test-hardlinks.sh` checks both download trees; `SRC_DIR` and
+   `DST_DIR` override the pair it tests.
 3. **`PUID=1000` / `PGID=1000`** everywhere, matching the `media` user that owns
    `/mnt/disk1/data`. Jellyfin additionally needs the host's `render` GID via
    `group_add` for `/dev/dri` access.
 4. **Exactly three HTTP services are public: the landing page, Jellyfin and
    Jellyseerr.** They are served by Caddy at `{$PUBLIC_DOMAIN}` with ports 80
-   and 443 forwarded from the router. The other seven apps are excluded
+   and 443 forwarded from the router. The other nine apps are excluded
    *structurally*, not carefully: they have **no route** in `caddy/sites.caddy`,
    **no public DNS record**, and the `DOCKER-USER` chain returns only 80/443
    from off-box. Any one of those alone would do; the point is that adding a
@@ -66,8 +67,13 @@ requiring explicit justification.
 
    qBittorrent's "run external program on completion" and SABnzbd's
    post-processing scripts are both arbitrary command execution by design — a
-   session on either is a shell on the box. That is why the exclusion is
-   mechanical (decisions.md D25, spec §5.3).
+   session on either is a shell on the box. Cleanuparr holds credentials for
+   both plus every *arr API key, so it reaches the same place one step removed.
+   That is why the exclusion is mechanical (decisions.md D25, D30, spec §5.3).
+
+   The landing page renders LAN addresses for the two *public* tiles when the
+   client is local (decisions.md D31). That changes which URL a household
+   browser navigates to; it changes nothing about what is routed or resolvable.
 
    The router also forwards **UDP `WG_PORT`**, and that does not weaken the
    above: a WireGuard port does not answer an unauthenticated probe at all, so
@@ -90,18 +96,29 @@ requiring explicit justification.
 5. **Every app enforces authentication, and it is asserted, not assumed.** The
    *arr auth method and scope are pinned as environment variables so they are
    re-applied on every container start; credentials come from `provision.sh`.
-   `scripts/audit-auth.sh` checks all nine apps against the running stack.
+   `scripts/audit-auth.sh` checks all eleven apps against the running stack.
    Never set `AuthenticationRequired` to `DisabledForLocalAddresses`: Caddy
    reaches the backends over the compose bridge, so that exemption applies to
    every proxied request and leaves the admin UIs open (decisions.md D18).
 
-   **wg-easy is the exception, and it is a real one.** v15 removed environment
-   configuration, so `INIT_*` applies on *first start only* and the credentials
-   then live in its database — asserted once, assumed thereafter. Never add
-   `PASSWORD` or `PASSWORD_HASH` to fix that: those are v14 variables and v15
-   refuses to start when it sees one. `audit-auth.sh` is the compensating
-   control, and the check that matters most is that the setup wizard is closed
-   (decisions.md D26).
+   **Two apps are exceptions, and both are real ones.**
+
+   *wg-easy:* v15 removed environment configuration, so `INIT_*` applies on
+   *first start only* and the credentials then live in its database — asserted
+   once, assumed thereafter. Never add `PASSWORD` or `PASSWORD_HASH` to fix
+   that: those are v14 variables and v15 refuses to start when it sees one.
+   `audit-auth.sh` is the compensating control, and the check that matters most
+   is that the setup wizard is closed (decisions.md D26).
+
+   *Cleanuparr:* worse, because it has no `INIT_*` equivalent at all. Both its
+   credentials and its API key are generated into its own database on first
+   start, so a wiped `/config` comes back with an open setup wizard and the
+   first visitor becomes the administrator. `audit-auth.sh` asserts
+   `setupCompleted` via its anonymous `/api/auth/status` endpoint. It also ships
+   D18's trap under the name **"Disable Auth for Local Addresses"**, whose
+   built-in trusted ranges include `172.16.0.0/12` — Docker's default pool — so
+   enabling it exempts the whole compose bridge, not just the LAN. It is off by
+   default; `audit-auth.sh` fails on `authBypassActive` (decisions.md D30).
 6. **Gluetun stays commented out** until a VPN provider with working port
    forwarding is chosen (§7). Do not uncomment it speculatively.
 
@@ -130,9 +147,9 @@ caddy/
   site/                   the landing page, served by Caddy at the bare domain
                           — no framework, no build step, no external requests
     index.html            Watch / Request tiles, collapsed admin disclosure,
-                          and the inline SVG sprite of the eight service marks
+                          and the inline SVG sprite of the eleven service marks
     style.css             design tokens; dark-first with a light override
-    app.js                host-derived links, reachability probes, pointer FX
+    app.js                link building, reachability probes, pointer FX
 config/
   recyclarr/recyclarr.yml quality profile templates (tracked, not ignored)
 scripts/
@@ -191,7 +208,7 @@ One command, needs nothing running:
 ./scripts/validate.sh
 ```
 
-It parses the compose config, asserts mechanically that exactly the six media
+It parses the compose config, asserts mechanically that exactly the eight media
 services mount `/data` and that they all resolve to **one** source (invariant 1
 and 2, which no runtime error would catch), confirms Gluetun is still commented
 out, checks the exposure invariants (every published port names an interface,
@@ -245,11 +262,16 @@ That last `grep` must print `1`, not `2`.
 
 All spec §9 deliverables are implemented. Before the Debian box existed, the
 stack was exercised on a macOS workstation with a compose override: all ten
-containers started and reached healthy, every web UI responded directly and
-through Caddy, the hardlink test passed, and `audit-auth.sh` passed on all eight
-apps. **That override is gone**, and none of those results were obtained on this
-hardware — treat them as prior evidence that the design works, not as
-verification of this box.
+containers of the day started and reached healthy, every web UI responded
+directly and through Caddy, the hardlink test passed, and `audit-auth.sh` passed
+on all eight apps that then existed. **That override is gone**, and none of those
+results were obtained on this hardware — treat them as prior evidence that the
+design works, not as verification of this box.
+
+The stack is thirteen services now: that run predates wg-easy, Lidarr and
+Cleanuparr, so those three have never been started anywhere. Lidarr's
+provisioning in particular is unexercised — it is the only app reached over the
+`v1` API through helpers that were `v3`-only until D29.
 
 A security and architecture review in August 2026 is written up in
 [`docs/review-2026-08.md`](docs/review-2026-08.md), with what it changed and what
@@ -265,6 +287,8 @@ because they invalidate reasonable-sounding assumptions:
 Untested on this hardware — do not report these as working: hardware
 transcoding, Let's Encrypt issuance, the router port forwards, the UFW and
 `DOCKER-USER` rules (including the 80/443 returns), the fail2ban web jails,
-unattended-upgrades, smartd delivery, and unattended boot. They are tracked in
-[`docs/verification.md`](docs/verification.md); open questions are in
+unattended-upgrades, smartd delivery, and unattended boot. Add to that everything
+from D29–D31: Lidarr's `v1` provisioning, Cleanuparr's deletion behaviour, and
+the landing page's LAN tiles, none of which have run anywhere. They are tracked
+in [`docs/verification.md`](docs/verification.md); open questions are in
 [`docs/decisions.md`](docs/decisions.md).

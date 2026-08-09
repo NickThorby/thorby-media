@@ -156,6 +156,36 @@ services:
     ports:
       - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${RADARR_PORT:-7878}:7878"
 
+  # ── Music ──────────────────────────────────────────────────────────────────
+  # Jellyseerr cannot request music — it is a film and TV product — so unlike
+  # Sonarr and Radarr this one has no household-facing front door. Adding albums
+  # is an administrator's job in Lidarr's own UI (decisions.md D29).
+  #
+  # Its API is v1, not v3. Everything that talks to it has to say so.
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: lidarr
+    restart: unless-stopped
+    logging: *logging
+    security_opt: *security
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8686/ping || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    environment:
+      <<: *env
+      LIDARR__AUTH__APIKEY: ${LIDARR_API_KEY:-}
+      # See the note on prowlarr — auth is pinned, not wizard-configured.
+      LIDARR__AUTH__METHOD: ${ARR_AUTH_METHOD:-Forms}
+      LIDARR__AUTH__REQUIRED: ${ARR_AUTH_REQUIRED:-Enabled}
+    volumes:
+      - ${CONFIG_ROOT:-/opt/mediaserver}/lidarr:/config
+      - ${DATA_ROOT:-/data}:/data
+    ports:
+      - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${LIDARR_PORT:-8686}:8686"
+
   # ── Subtitles ──────────────────────────────────────────────────────────────
   # Needs /data: it writes subtitle files alongside the media.
   bazarr:
@@ -235,6 +265,59 @@ services:
     ports:
       - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${SAB_PORT:-8085}:8080"
 
+  # ── Download cleanup ───────────────────────────────────────────────────────
+  # Removes malware, stalled and unlinked downloads from the queue, and tells the
+  # *arrs to search again for what it removed. Closes part of what decisions.md
+  # D27 records as knowingly unguarded on the temporary 2 TB disk.
+  #
+  # It cleans qBittorrent only — it has no SABnzbd support. Since D14 gives
+  # SABnzbd download-client priority 1, the queue carrying most TV and film is
+  # NOT covered by this. That asymmetry is accepted, not overlooked (D30).
+  #
+  # Not a LinuxServer image, so it does not get the PUID/PGID contract by way of
+  # s6 — it implements the same variable names itself. There is no LinuxServer
+  # build to prefer (D30), which is why the convention in CLAUDE.md is bent here.
+  #
+  # Needs /data for the same reason Bazarr does: the unlinked-download cleaner
+  # counts hardlinks on the files themselves, so it has to see the identical tree
+  # every other container sees (invariant 1).
+  cleanuparr:
+    image: ghcr.io/cleanuparr/cleanuparr:latest
+    container_name: cleanuparr
+    restart: unless-stopped
+    logging: *logging
+    security_opt: *security
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:11011/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    environment:
+      <<: *env
+      PORT: 11011
+      UMASK: "022"
+      # Empty rather than absent. It is a reverse-proxy path prefix and nothing
+      # proxies this app; leaving it unset is the same result by accident.
+      BASE_PATH: ""
+    volumes:
+      - ${CONFIG_ROOT:-/opt/mediaserver}/cleanuparr:/config
+      - ${DATA_ROOT:-/data}:/data
+    ports:
+      - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${CLEANUPARR_PORT:-11011}:11011"
+    # It polls the download client and the *arrs and does nothing else, so it is
+    # useless until they answer — and its first act on a dead API is to log an
+    # error every cycle. Gate it rather than let it start into a wall of them.
+    depends_on:
+      qbittorrent:
+        condition: service_healthy
+      sonarr:
+        condition: service_healthy
+      radarr:
+        condition: service_healthy
+      lidarr:
+        condition: service_healthy
+
   # ── Requests ───────────────────────────────────────────────────────────────
   # The household front door. Search, discover, and request — requests flow
   # into Radarr and Sonarr automatically, and users sign in with their existing
@@ -302,9 +385,9 @@ services:
   # The public front door, and the only thing reachable from the internet. It
   # routes exactly three names — the landing page, Jellyfin and Jellyseerr.
   #
-  # The seven admin apps are NOT proxied. They are reached at <lan-ip>:<port>,
+  # The nine admin apps are NOT proxied. They are reached at <lan-ip>:<port>,
   # on the LAN or over WireGuard, so there is no public route to them to get
-  # wrong (decisions.md D25, D26, spec §5.3).
+  # wrong (decisions.md D25, D26, D29, D30, spec §5.3).
   caddy:
     image: caddy:alpine
     container_name: caddy
@@ -327,13 +410,25 @@ services:
       # The address the Manage links point at, and the ports they use. Templated
       # into the landing page at request time so .env stays the only place a
       # host port is written down.
+      #
+      # JELLYFIN_PORT and SEERR_PORT are here for the two *public* tiles, which
+      # are proxied and so never needed a port before. A client on the LAN or the
+      # tunnel is now sent straight to <lan-ip>:<port> instead of back out
+      # through the domain, and that needs the same treatment (D31).
+      #
+      # A name missing from this block does not fail — {{env}} expands to the
+      # empty string and the page renders http://10.0.0.5: as a live link.
       ADMIN_HOST: ${ADMIN_HOST:?ADMIN_HOST is unset — the LAN address of this box}
+      JELLYFIN_PORT: ${JELLYFIN_PORT:-8096}
+      SEERR_PORT: ${SEERR_PORT:-5055}
       SONARR_PORT: ${SONARR_PORT:-8989}
       RADARR_PORT: ${RADARR_PORT:-7878}
+      LIDARR_PORT: ${LIDARR_PORT:-8686}
       PROWLARR_PORT: ${PROWLARR_PORT:-9696}
       BAZARR_PORT: ${BAZARR_PORT:-6767}
       SAB_PORT: ${SAB_PORT:-8085}
       QBIT_PORT: ${QBIT_PORT:-8080}
+      CLEANUPARR_PORT: ${CLEANUPARR_PORT:-11011}
       WG_UI_PORT: ${WG_UI_PORT:-51821}
       # Relocated off Caddy's default /data. In this stack /data means the media
       # root in every container; having one container where it means something

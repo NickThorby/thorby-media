@@ -23,11 +23,12 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 DOWNLOADER=${DOWNLOADER:-qbittorrent}   # writes the "completed download"
 IMPORTER=${IMPORTER:-sonarr}            # performs the "import"
 SRC_DIR=${SRC_DIR:-/data/torrents/tv}   # override to test the usenet tree
+DST_DIR=${DST_DIR:-/data/media/tv}      # override to test the music tree
 LABEL=${LABEL:-torrent}
 
 TEST_ID="hardlink-test-$$"
 SRC="${SRC_DIR}/${TEST_ID}.bin"
-DST="/data/media/tv/${TEST_ID}.bin"
+DST="${DST_DIR}/${TEST_ID}.bin"
 
 red()   { printf '\033[31m%s\033[0m\n' "$1"; }
 green() { printf '\033[32m%s\033[0m\n' "$1"; }

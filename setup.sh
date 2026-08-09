@@ -551,10 +551,10 @@ create_tree() {
   # torrents/, usenet/ and media/ are siblings on one filesystem so imports
   # hardlink instead of copying (spec §3.3). Splitting them degrades silently.
   local d
-  for d in torrents/movies       torrents/tv       torrents/anime \
+  for d in torrents/movies       torrents/tv       torrents/anime       torrents/music \
            usenet/incomplete \
-           usenet/complete/movies usenet/complete/tv usenet/complete/anime \
-           media/movies          media/tv          media/anime; do
+           usenet/complete/movies usenet/complete/tv usenet/complete/anime usenet/complete/music \
+           media/movies          media/tv          media/anime          media/music; do
     run mkdir -p "${DATA_DIR}/${d}"
   done
   run chown -R "${PUID}:${PGID}" "$DATA_DIR"
@@ -771,7 +771,7 @@ configure_firewall() {
   # tunnel-and-LAN-only box stays exactly as it was.
   #
   # Caddy serves three names here — the landing page, Jellyfin and Jellyseerr.
-  # The seven admin apps are not routed through it at all, so opening 80 and 443
+  # The nine admin apps are not routed through it at all, so opening 80 and 443
   # exposes those three and nothing else (decisions.md D25, spec §5.3).
   if [[ -n "${PUBLIC_DOMAIN:-}" ]]; then
     run ufw allow 80/tcp
@@ -972,7 +972,7 @@ report() {
     info "from the LAN and from any WireGuard peer, by the same address."
   else
     warn "wg0 does not exist yet. Until the wg-easy container has started once,"
-    warn "the seven admin apps are LAN-only:  docker compose up -d wg-easy"
+    warn "the nine admin apps are LAN-only:  docker compose up -d wg-easy"
   fi
   echo
 }

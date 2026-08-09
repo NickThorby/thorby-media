@@ -71,7 +71,7 @@ editing the compose file.
 ### D7. Image tags: `:latest`
 
 LinuxServer images are rolling releases and the *arr ecosystem assumes reasonably
-current versions; pinning digests here would mean hand-bumping seven images.
+current versions; pinning digests here would mean hand-bumping a dozen images.
 Updates are a deliberate `docker compose pull && docker compose up -d`, not
 automatic — no Watchtower. Back up `${CONFIG_ROOT}` before pulling.
 
@@ -273,11 +273,13 @@ One file therefore works at both the real domain and a dev hostname, port
 included. A server-side template on the domain variable would lose the dev port,
 since that variable carries no port.
 
-Three later amendments: the variable is now `{$PUBLIC_DOMAIN}` (D25); this
+Four later amendments: the variable is now `{$PUBLIC_DOMAIN}` (D25); this
 derivation applies to the **two public tiles only** — the admin chips point at
 `<lan-ip>:<port>` and are rendered server-side, because nothing proxies them;
-and there are **seven** admin tools behind the disclosure, not six, since D26
-added wg-easy to the set.
+there are **nine** admin tools behind the disclosure, not six, since D26 added
+wg-easy and D29/D30 added Lidarr and Cleanuparr; and since **D31** even the two
+public tiles use `<lan-ip>:<port>` when the client is local, so the derivation
+above is now the fallback rather than the whole rule.
 
 All of the above still holds. Two of its literal claims no longer do: there is
 now a third file, `app.js`, and the page makes same-origin requests of its own
@@ -488,12 +490,14 @@ guaranteed a route out.
 **Amended by D26, and by what shipping on a real domain turned out to mean.**
 Four literal claims above have moved:
 
-- There are **seven** admin chips and **nine** marks, not six and eight — D26
-  added the wg-easy chip. Its symbol is also the one exception to "the marks are
-  the projects' own": WireGuard's logo is a wordmark that does not survive being
-  put on a 512-square plate, so that one is a hand-drawn shield and keyhole.
+- There are **nine** admin chips and **eleven** marks, not six and eight — D26
+  added the wg-easy chip, D29 and D30 added Lidarr and Cleanuparr. Two are now
+  exceptions to "the marks are the projects' own": WireGuard's logo is a wordmark
+  that does not survive being put on a 512-square plate, and Cleanuparr ships its
+  only vector as a 71 KB traced bitmap. Both are hand-drawn, and both say so in
+  a comment beside them.
 - The `validate.sh` check compares the **tiles'** `data-sub` set against the
-  routes, not the whole page's. The seven chips carry a `data-sub` too and are
+  routes, not the whole page's. The nine chips carry a `data-sub` too and are
   not routes; comparing all of them would fail by construction.
 - The CORS paragraph is moot twice over. Under D25 **no admin UI is proxied at
   all**, so there is nothing to put a header on, and the count was never eight.
@@ -512,6 +516,12 @@ Four literal claims above have moved:
   Making them work would mean serving the page over plain HTTP somewhere, or
   issuing certificates for private addresses, or proxying the admin apps. The
   third is the one thing this design exists to refuse. The dots stay off.
+
+  **D31 found a fourth way, and it only works for the hero tiles.** Those have a
+  public HTTPS name as well as a LAN address, so when the tile's href moved to
+  the LAN the probe could stay on the public name — navigation and probing became
+  two URLs. The chips never had a second address, which is why this paragraph
+  still describes them exactly. Read D31 for what the split costs.
 
 ### D25. Two doors: a public one for the household, a VPN for the administrator
 
@@ -754,6 +764,179 @@ active" was asking for a re-run that would then skip the retry. And the fail2ban
 Jellyseerr both emit those routinely on session expiry, and ten in ten minutes
 is an ordinary evening on a flaky phone connection. Unfixed, the jail's first
 victim would have been the household.
+
+---
+
+## D29. Lidarr, and music as a change of scope
+
+The spec's first sentence said "TV, film, and anime". Adding Lidarr moves it, so
+this is a scope change rather than another service — recorded here rather than
+slipped in, because review finding A2 was precisely about a spec that had stopped
+describing the build.
+
+Mechanically it is the least interesting addition in the stack: another
+LinuxServer *arr, `/data:/data` like the rest, auth pinned through
+`LIDARR__AUTH__{APIKEY,METHOD,REQUIRED}` exactly as D12 and D18 describe, and
+three new leaves on the §3.1 tree. Two details are not interchangeable with
+Sonarr and Radarr and will waste an afternoon if assumed:
+
+- **Its API is `v1`, not `v3`.** `provision.sh`'s `add_root_folder`,
+  `upsert_download_client` and `ensure_hardlinks` all had `/api/v3/` written into
+  them. They now take a version as a trailing argument defaulting to `v3`, so
+  every existing call site is untouched and only Lidarr passes `v1`. A wrong
+  version 404s loudly, which is why a default is acceptable here.
+- **Its root folder needs more than a path.** `POST /api/v1/rootfolder` validates
+  `name`, `defaultQualityProfileId` and `defaultMetadataProfileId`, and the two
+  ids must reference rows that exist. Sonarr and Radarr accept `{"path": …}`
+  alone. Neither id is stable — they depend on creation order — so the helper
+  looks them up rather than assuming `1`.
+
+Its download-client category field is `musicCategory` for both clients, which the
+existing `qbit_fields`/`sab_fields` helpers already handle since they take the
+field name as an argument.
+
+**What music does not get, and why that is not a gap to fix.** Jellyseerr is a
+film and TV product with no Lidarr support, so there is no household-facing
+request path — D16's "the thing to teach collapses to two words" is unaffected,
+because nobody but the administrator was ever going to add an artist. Recyclarr
+has no Lidarr support either, so `config/recyclarr/recyclarr.yml` is unchanged
+and Lidarr's quality profiles are whatever its defaults are until someone cares.
+Bazarr has nothing to say about music.
+
+**Capacity.** D27 has the library on a temporary 2 TB disk with the Radarr
+profile at `UHD-2160p`, roughly 65–130 films before it is full. Music is small by
+comparison — a large FLAC library is a few hundred gigabytes against a single
+4K remux at 60 — so this is not what fills the disk. It does add one more thing
+competing for it, and D27's "no free-space alerting anywhere" still stands.
+
+---
+
+## D30. Cleanuparr for download hygiene, and a second exception to invariant 5
+
+D27 lists what the temporary disk leaves unguarded: no seed-ratio limit, no
+free-space floor, no stalled-download handling, and nothing watching for
+downloads that will never finish. Cleanuparr closes part of that — stalled and
+blocked removal, failed-import handling, unlinked-download cleanup, and a malware
+blocker that has no equivalent anywhere else in this stack.
+
+**Over Declutterarr** because it is more actively maintained (v2.10.3 shipped a
+week before this was written), supports more download clients, has a real
+authentication system rather than none, and documents its API well enough to be
+audited — which is what made the `audit-auth.sh` section below possible.
+
+**It cleans qBittorrent only, and that matters more than it sounds.** There is no
+SABnzbd support. D14 gives SABnzbd download-client priority 1 precisely because
+Usenet is faster and carries no seeding obligation, so in practice it carries TV
+and film while torrents carry anime and now music. Cleanuparr therefore covers
+the *secondary* client and the larger half of the queue stays uncovered. That is
+accepted rather than solved: SABnzbd manages its own queue and retries, and the
+failure modes Cleanuparr exists for — a torrent seeding forever, a download
+stalled at 99%, a file nothing links to — are torrent-shaped to begin with.
+
+**Three deviations from house convention, each forced:**
+
+1. **Not a LinuxServer image.** `CLAUDE.md` says not to substitute other
+   maintainers' images. There is no LinuxServer build of Cleanuparr, so the
+   choice is this image or not having it. Jellyseerr and Recyclarr are the
+   existing precedents. It implements `PUID`/`PGID`/`TZ`/`UMASK` itself, so the
+   contract the convention exists to protect is intact.
+2. **No pinnable API key or credentials.** Both are generated into its own SQLite
+   database on first start. D12's mechanism — pin the key in `.env` so the
+   provisioner can configure the app before anyone has logged in — simply does
+   not apply, so `provision.sh` cannot touch it and Cleanuparr is configured by
+   hand like Jellyfin's libraries.
+3. **It mounts `/data` read-write.** Its unlinked-download cleaner counts
+   hardlinks on the files themselves, which no API can do for it, so it needs the
+   identical `/data:/data` mount invariant 1 requires. `validate.sh`'s
+   `MEDIA_SERVICES` goes from six to eight with Lidarr. Read-only was considered
+   and rejected: the orphan-file cleaner deletes, and shipping a half-working
+   configuration to buy a safety property is worse than shipping the destructive
+   features switched off, which is what the setup step in spec §6 says to do.
+
+**The authentication exception, which is the part worth carrying in your head.**
+Invariant 5 says every app's auth is asserted, not assumed. Cleanuparr is the
+second app that cannot honour that, for the same reason as wg-easy under D26:
+there is no environment variable, so the account is created through a setup flow
+and then lives in a database. Worse than wg-easy, in fact — wg-easy at least has
+`INIT_*` on first start, and Cleanuparr has no equivalent at all. A wiped
+`/config` comes back with an open setup wizard, and whoever reaches port 11011
+first becomes the administrator. That is the same failure D12 and D18 protect the
+*arrs from.
+
+Two things make it tolerable. It is unreachable from the internet by the three
+mechanisms in spec §5.3, like every other admin app. And its compensating control
+is better than wg-easy's: `GET /api/auth/status` is deliberately anonymous — the
+login page reads it to decide what to draw — and reports both `setupCompleted`
+and `authBypassActive`, so `audit-auth.sh` can assert the two things that matter
+without holding a credential.
+
+**And it ships D18's trap under a new name.** The setting is "Disable Auth for
+Local Addresses", and its built-in trusted ranges include `172.16.0.0/12` —
+Docker's default address pool. Turning it on does not trust the LAN, it exempts
+every container on the compose bridge. Verified from the source:
+`TrustedNetworkAuthenticationHandler` returns `NoResult()` unless the setting is
+on, so the default is safe; it is the helpful-looking toggle that is not. Never
+enable it, for the same reason `DisabledForLocalAddresses` is never set on the
+*arrs.
+
+**On VPN day** Cleanuparr does not follow `QBIT_HOST`. It stores the download
+client's host in its own database, so when qBittorrent moves onto Gluetun (§7)
+its client entry has to be edited to `gluetun:8080` by hand. Nothing will report
+that it has gone deaf. That step is now written into spec §7.
+
+---
+
+## D31. The landing page sends local clients to LAN addresses
+
+The two public tiles derived their href from `location.host` (D17), so a client
+sitting in the living room loaded `https://jellyfin.media.thorby.tech`, went out
+to the router, and came back in through the WAN address. That depends on the
+router hairpinning, and it routes LAN playback through the public path for no
+benefit. Caddy already knows which clients are local — the `private_only` snippet
+tags them for the Manage section — so the tiles now use the same tag and render
+`http://<lan-ip>:<port>` for anyone inside.
+
+**The header was renamed `X-Admin-Visible` -> `X-Local-Client`.** It now decides
+two unrelated things, and a name describing only one of them is a name the next
+person reasons wrongly from.
+
+**What was rejected.** `verification.md` item 11 already proposes the better fix
+for the same problem: a DNS override on the router pointing the three public
+names at `CADDY_BIND_ADDR`. It keeps TLS, keeps one set of bookmarks working at
+home and away, needs no change to this repo at all, and the certificate still
+validates because it is issued for the name and not the address. It was passed
+over deliberately in favour of going direct to the container — one less hop, no
+dependence on the router supporting DNS overrides — and the LAN-address version
+is what is built. If the router does support overrides, doing both is coherent:
+the tiles go direct and the domain still resolves indoors for anything that types
+it.
+
+**What it costs, stated plainly because nothing else will say it.**
+
+- *No TLS on the LAN path.* Encrypted in transit over WireGuard, plaintext on the
+  LAN — which D25 already accepted for the nine admin apps, now extended to the
+  two the household uses.
+- *The dot no longer attests to the link under it.* This is the real cost. A
+  `fetch` from this `https:` page to an `http:` LAN address is blocked as active
+  mixed content whatever `mode: 'no-cors'` says — the wall D24's amendment
+  documents for the Manage chips, which is why those dots are hidden outright in
+  production. Rather than let the hero dots go dark indoors, `app.js` carries
+  navigation and probing as two separate URLs: `data-lan` for the href,
+  `data-probe` for the fetch, the latter always the public name. So a wrong
+  `ADMIN_HOST` or an unpublished port shows green.
+
+  That is a genuine narrowing of the honesty D24 spent a page defending, taken
+  with open eyes: the dot still means what it always meant — "this hostname is
+  answering" — it just answers about the public route while the link takes the
+  private one. What it still catches is unchanged: a route drifted out of
+  `sites.caddy`, a client off the VPN, a stale DNS answer.
+
+**Supersedes, in part:** D17's `location.host` derivation, which now describes
+the fallback rather than the whole rule; D24's amendment on why the hero probes
+work and the chip probes do not; and spec §2.2's claim that the page "has no way
+to render a different link per network" — it does now, for private-versus-public,
+though still not for LAN-versus-tunnel, which is why one `ADMIN_HOST` still has
+to work from both.
 
 ---
 

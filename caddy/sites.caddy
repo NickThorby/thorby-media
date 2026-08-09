@@ -10,16 +10,19 @@
 #
 # ── Only three services are routed here, and that is the whole point ──────────
 #
-# Sonarr, Radarr, Prowlarr, Bazarr, qBittorrent and SABnzbd are deliberately
-# absent. They are reached at <lan-ip>:<port> on the LAN, or over WireGuard from
-# anywhere — never through this proxy and never under a public name. qBittorrent
-# runs an external program on completion and SABnzbd runs post-processing
-# scripts; both are arbitrary command execution by design (spec §5.3), so the
-# exclusion is structural rather than a matter of remembering.
+# Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, qBittorrent, SABnzbd and Cleanuparr
+# are deliberately absent. They are reached at <lan-ip>:<port> on the LAN, or
+# over WireGuard from anywhere — never through this proxy and never under a
+# public name. qBittorrent runs an external program on completion and SABnzbd
+# runs post-processing scripts; both are arbitrary command execution by design
+# (spec §5.3), and Cleanuparr holds credentials for both plus every *arr API
+# key, so it reaches the same place one step removed. The exclusion is
+# structural rather than a matter of remembering.
 #
 # Do not add them back "temporarily", and do not leave a commented-out block
 # here — a commented route is one keystroke from being live. scripts/validate.sh
-# fails if any of those six names appears in this file at all (decisions.md D25).
+# fails if any of those eight names appears in this file at all (decisions.md
+# D25, D30).
 
 # Imported by every site below.
 #
@@ -49,29 +52,40 @@
 	}
 }
 
-# Tags requests that came from the LAN or the WireGuard tunnel, so the landing
-# page can show the Manage section to the administrator and not to the internet.
+# Tags requests that came from the LAN or the WireGuard tunnel. The landing page
+# template branches on this tag twice:
 #
-# This is presentation, not access control. The seven admin apps are unreachable
-# through this proxy because they have no route below and no DNS record — not
-# because a link is hidden. Treat this snippet as cosmetic and the absence of
-# the routes as the boundary.
+#   1. It shows the Manage section to the administrator and not to the internet.
+#   2. It points the Watch and Request tiles at <lan-ip>:<port> rather than back
+#      out through the public domain, so a client indoors is not relying on the
+#      router hairpinning its own WAN address (decisions.md D31).
+#
+# Neither is access control. The nine admin apps are unreachable through this
+# proxy because they have no route below and no DNS record — not because a link
+# is hidden. Treat this snippet as presentation and the absence of the routes as
+# the boundary.
+#
+# The header is X-Local-Client rather than the X-Admin-Visible it was called
+# through D26: it now decides more than whether the admin block renders, and a
+# name that describes only half of that is a name someone will reason wrongly
+# from.
 #
 # Three RFC1918 ranges. WG_SUBNET defaults to 10.8.0.0/24, already inside
 # 10.0.0.0/8; a WireGuard subnet chosen outside these ranges must be added here
-# or the Manage section will not render for tunnel clients (decisions.md D26).
+# or neither branch fires for tunnel clients (decisions.md D26).
 (private_only) {
 	@private remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
-	request_header @private X-Admin-Visible 1
+	request_header @private X-Local-Client 1
 }
 
 # The front door. Static files, served by this same Caddy — no extra container.
 #
 # `private_only` tags requests coming from the LAN or the tunnel, and
-# `templates` lets index.html use that tag to decide whether to render the
-# Manage section. Both are required: without `templates` the conditional would
-# render as literal text *and* the admin links would appear. validate.sh
-# asserts it.
+# `templates` lets index.html use that tag — to decide whether to render the
+# Manage section, and to decide whether the Watch and Request tiles point at the
+# LAN or at the public names. Both directives are required: without `templates`
+# the conditionals would render as literal text *and* the admin links would
+# appear. validate.sh asserts it.
 {$PUBLIC_DOMAIN} {
 	import common
 	import private_only

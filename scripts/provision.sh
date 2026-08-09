@@ -68,9 +68,13 @@ if [[ "${1:-}" == "--init-keys" ]]; then
   }
 
   added=0
-  for var in SONARR_API_KEY RADARR_API_KEY PROWLARR_API_KEY; do
+  for var in SONARR_API_KEY RADARR_API_KEY LIDARR_API_KEY PROWLARR_API_KEY; do
     set_key "$var" "$(openssl rand -hex 16)" && added=1
   done
+  # Cleanuparr is absent from both loops on purpose. It has no environment
+  # variable for either its API key or its credentials — both are generated into
+  # its own database on first start — so there is nothing to pin ahead of time
+  # and nothing here to generate (decisions.md D30).
   # WG_PASS is in this list even though nothing later in this script uses it.
   # It is `${WG_PASS:?}` in docker-compose.yml, so the stack will not start
   # without it, and it is the credential that gates minting a VPN peer — which
@@ -107,7 +111,7 @@ set -a
 source ./.env
 set +a
 
-for var in SONARR_API_KEY RADARR_API_KEY PROWLARR_API_KEY QBIT_PASS ARR_PASS; do
+for var in SONARR_API_KEY RADARR_API_KEY LIDARR_API_KEY PROWLARR_API_KEY QBIT_PASS ARR_PASS; do
   [[ -n "${!var:-}" ]] || die "$var is not set in .env. Run: ./scripts/provision.sh --init-keys"
 done
 
@@ -124,6 +128,7 @@ QBIT_HOST=${QBIT_HOST:-qbittorrent}
 SAB_HOST=${SAB_HOST:-sabnzbd}
 SONARR_URL="http://127.0.0.1:${SONARR_PORT:-8989}"
 RADARR_URL="http://127.0.0.1:${RADARR_PORT:-7878}"
+LIDARR_URL="http://127.0.0.1:${LIDARR_PORT:-8686}"
 PROWLARR_URL="http://127.0.0.1:${PROWLARR_PORT:-9696}"
 
 # ─── HTTP helpers ────────────────────────────────────────────────────────────
@@ -563,35 +568,63 @@ add_indexer() {
 
 # ─── Root folders ────────────────────────────────────────────────────────────
 
+# add_root_folder <app> <url> <key> <path> [api-version]
+#
+# The version defaults to v3 so the Sonarr and Radarr calls read as they always
+# did. Lidarr is v1 — a wrong version 404s immediately rather than doing
+# something subtle, which is why a default is safe here.
 add_root_folder() {
-  local app=$1 url=$2 key=$3 path=$4
-  if arr GET "$url" "$key" /api/v3/rootfolder | jq -e --arg p "$path" 'any(.[]; .path == $p)' >/dev/null; then
+  local app=$1 url=$2 key=$3 path=$4 ver=${5:-v3}
+  if arr GET "$url" "$key" "/api/$ver/rootfolder" | jq -e --arg p "$path" 'any(.[]; .path == $p)' >/dev/null; then
     skip "$app root folder $path exists"
-  else
-    arr POST "$url" "$key" /api/v3/rootfolder "{\"path\":\"$path\"}" >/dev/null
-    ok "$app root folder $path"
+    return
   fi
+
+  local body="{\"path\":\"$path\"}"
+
+  # Lidarr validates three more fields than Sonarr and Radarr do: a name, and a
+  # default quality *and* metadata profile, both of which must reference rows
+  # that exist. Neither id is stable — they depend on the order the profiles were
+  # created in — so look them up rather than assuming 1.
+  if [[ "$ver" == "v1" ]]; then
+    local qp mp
+    qp=$(arr GET "$url" "$key" "/api/$ver/qualityprofile"  | jq -r 'first(.[].id) // empty')
+    mp=$(arr GET "$url" "$key" "/api/$ver/metadataprofile" | jq -r 'first(.[].id) // empty')
+    if [[ -z "$qp" || -z "$mp" ]]; then
+      warn "$app has no quality or metadata profile yet — skipping root folder $path"
+      return
+    fi
+    body=$(jq -n --arg p "$path" --arg n "$(basename "$path")" \
+                 --argjson qp "$qp" --argjson mp "$mp" \
+      '{path: $p, name: $n, defaultQualityProfileId: $qp, defaultMetadataProfileId: $mp}')
+  fi
+
+  arr POST "$url" "$key" "/api/$ver/rootfolder" "$body" >/dev/null
+  ok "$app root folder $path"
 }
 
 # ─── Download client ─────────────────────────────────────────────────────────
 
 # upsert_download_client <app> <url> <key> <name> <impl> <contract> <protocol>
-#                        <priority> <fields-json> <description>
+#                        <priority> <fields-json> <description> [api-version]
 #
 # Priority is lowest-wins. SABnzbd is given 1 and qBittorrent 2 so Usenet is
 # preferred where both have a release — it is faster and carries no seeding
 # obligation. Torrents still win for anime, which Usenet covers poorly, because
 # that is where the releases actually are.
+#
+# The version trails the existing arguments so Sonarr and Radarr's calls are
+# unchanged; only Lidarr passes v1.
 upsert_download_client() {
-  local app=$1 url=$2 key=$3 name=$4 impl=$5 contract=$6 proto=$7 prio=$8 fields=$9 desc=${10}
+  local app=$1 url=$2 key=$3 name=$4 impl=$5 contract=$6 proto=$7 prio=$8 fields=$9 desc=${10} ver=${11:-v3}
   local existing
-  existing=$(arr GET "$url" "$key" /api/v3/downloadclient | jq --arg n "$name" '.[] | select(.name == $n)')
+  existing=$(arr GET "$url" "$key" "/api/$ver/downloadclient" | jq --arg n "$name" '.[] | select(.name == $n)')
 
   if [[ -n "$existing" ]]; then
     if [[ $(jq -r '.priority' <<<"$existing") == "$prio" ]]; then
       skip "$app: $name exists"
     else
-      arr PUT "$url" "$key" "/api/v3/downloadclient/$(jq -r '.id' <<<"$existing")" \
+      arr PUT "$url" "$key" "/api/$ver/downloadclient/$(jq -r '.id' <<<"$existing")" \
         "$(jq --argjson p "$prio" '.priority = $p' <<<"$existing")" >/dev/null
       ok "$app: $name priority -> $prio"
     fi
@@ -605,7 +638,7 @@ upsert_download_client() {
       removeCompletedDownloads: true, removeFailedDownloads: true,
       name: $name, implementation: $impl, configContract: $contract,
       fields: $fields}')
-  arr POST "$url" "$key" /api/v3/downloadclient "$body" >/dev/null
+  arr POST "$url" "$key" "/api/$ver/downloadclient" "$body" >/dev/null
   ok "$app: $name -> $desc"
 }
 
@@ -662,14 +695,18 @@ ensure_arr_auth() {
 
 # ─── Hardlinks ───────────────────────────────────────────────────────────────
 
+# ensure_hardlinks <app> <url> <key> [api-version]
+#
+# Lidarr spells the field the same way Sonarr and Radarr do, so only the path
+# version differs.
 ensure_hardlinks() {
-  local app=$1 url=$2 key=$3 current updated
-  current=$(arr GET "$url" "$key" /api/v3/config/mediamanagement)
+  local app=$1 url=$2 key=$3 ver=${4:-v3} current updated
+  current=$(arr GET "$url" "$key" "/api/$ver/config/mediamanagement")
   if [[ $(jq -r '.copyUsingHardlinks' <<<"$current") == "true" ]]; then
     skip "$app already uses hardlinks instead of copy"
   else
     updated=$(jq '.copyUsingHardlinks = true' <<<"$current")
-    arr PUT "$url" "$key" /api/v3/config/mediamanagement "$updated" >/dev/null
+    arr PUT "$url" "$key" "/api/$ver/config/mediamanagement" "$updated" >/dev/null
     ok "$app set to hardlink instead of copy"
   fi
 }
@@ -725,6 +762,7 @@ add_prowlarr_app() {
 step "Waiting for services"
 wait_for Sonarr   "$SONARR_URL/api/v3/system/status"   "$SONARR_API_KEY";   ok "Sonarr ready"
 wait_for Radarr   "$RADARR_URL/api/v3/system/status"   "$RADARR_API_KEY";   ok "Radarr ready"
+wait_for Lidarr   "$LIDARR_URL/api/v1/system/status"   "$LIDARR_API_KEY";   ok "Lidarr ready"
 wait_for Prowlarr "$PROWLARR_URL/api/v1/system/status" "$PROWLARR_API_KEY"; ok "Prowlarr ready"
 
 # Close the *arr UIs first. Everything below this point is configuration; this
@@ -732,6 +770,7 @@ wait_for Prowlarr "$PROWLARR_URL/api/v1/system/status" "$PROWLARR_API_KEY"; ok "
 step "Logins"
 ensure_arr_auth Sonarr   "$SONARR_URL"   "$SONARR_API_KEY"   v3
 ensure_arr_auth Radarr   "$RADARR_URL"   "$RADARR_API_KEY"   v3
+ensure_arr_auth Lidarr   "$LIDARR_URL"   "$LIDARR_API_KEY"   v1
 ensure_arr_auth Prowlarr "$PROWLARR_URL" "$PROWLARR_API_KEY" v1
 
 provision_qbittorrent
@@ -759,9 +798,21 @@ upsert_download_client Radarr "$RADARR_URL" "$RADARR_API_KEY" \
   qBittorrent QBittorrent QBittorrentSettings torrent 2 "$(qbit_fields movieCategory movies)" "qbittorrent:8080, category 'movies'"
 ensure_hardlinks Radarr "$RADARR_URL" "$RADARR_API_KEY"
 
+# Lidarr is v1 throughout, and its category field is musicCategory rather than
+# tvCategory/movieCategory. Same priority ordering as the other two: Usenet
+# first, torrents as the fallback.
+step "Lidarr"
+add_root_folder Lidarr "$LIDARR_URL" "$LIDARR_API_KEY" /data/media/music v1
+upsert_download_client Lidarr "$LIDARR_URL" "$LIDARR_API_KEY" \
+  SABnzbd Sabnzbd SabnzbdSettings usenet 1 "$(sab_fields musicCategory music)" "sabnzbd:8080, category 'music'" v1
+upsert_download_client Lidarr "$LIDARR_URL" "$LIDARR_API_KEY" \
+  qBittorrent QBittorrent QBittorrentSettings torrent 2 "$(qbit_fields musicCategory music)" "qbittorrent:8080, category 'music'" v1
+ensure_hardlinks Lidarr "$LIDARR_URL" "$LIDARR_API_KEY" v1
+
 step "Prowlarr"
 add_prowlarr_app Sonarr Sonarr SonarrSettings "http://sonarr:8989" "$SONARR_API_KEY"
 add_prowlarr_app Radarr Radarr RadarrSettings "http://radarr:7878" "$RADARR_API_KEY"
+add_prowlarr_app Lidarr Lidarr LidarrSettings "http://lidarr:8686" "$LIDARR_API_KEY"
 # Usenet indexers are private and useless without a key, so skip them until
 # one is supplied rather than creating a broken entry.
 for pair in "NZBgeek:${NZBGEEK_API_KEY:-}" "NzbPlanet:${NZBPLANET_API_KEY:-}"; do
@@ -805,9 +856,20 @@ printf '  %s\n' \
   "Prowlarr: the public torrent indexers are already added. Add any private" \
   "          trackers by hand — they need per-site credentials." \
   "Bazarr:   connect to Sonarr and Radarr, choose subtitle providers." \
-  "Jellyfin: create three libraries — /data/media/{movies,tv,anime}," \
+  "Jellyfin: create four libraries — /data/media/{movies,tv,anime,music}," \
   "          anime as its own library, and enable VAAPI on the target." \
-  "Recyclarr: docker compose exec recyclarr recyclarr sync"
+  "Recyclarr: docker compose exec recyclarr recyclarr sync (no Lidarr support)" \
+  "" \
+  "Cleanuparr: nothing here could configure it — it has no environment" \
+  "          variable for its credentials or its API key, so both are created" \
+  "          in its database on first start (decisions.md D30). Do this now," \
+  "          before anyone else can, at http://<lan-ip>:${CLEANUPARR_PORT:-11011}" \
+  "            1. Create the admin account. That closes the setup wizard." \
+  "            2. Leave 'Disable Auth for Local Addresses' OFF — its trusted" \
+  "               ranges include 172.16.0.0/12, the Docker bridge." \
+  "            3. Add qBittorrent at http://${QBIT_HOST}:8080 and the four *arrs." \
+  "            4. Leave the destructive cleaners disabled until you have" \
+  "               watched it run — it has write access to /data."
 echo
 ok "Provisioning complete. Verify with: ./scripts/test-hardlinks.sh"
 echo

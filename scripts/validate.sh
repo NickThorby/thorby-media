@@ -14,8 +14,10 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # Services that touch media and therefore must share /data. Prowlarr brokers
-# indexers, Recyclarr talks to APIs, Caddy proxies — none need the media tree.
-MEDIA_SERVICES='["bazarr","jellyfin","qbittorrent","radarr","sabnzbd","sonarr"]'
+# indexers, Recyclarr and Jellyseerr talk to APIs, Caddy proxies — none need the
+# media tree. Cleanuparr does: its unlinked-download cleaner counts hardlinks on
+# the files themselves, which it cannot do through an API (decisions.md D30).
+MEDIA_SERVICES='["bazarr","cleanuparr","jellyfin","lidarr","qbittorrent","radarr","sabnzbd","sonarr"]'
 
 pass=0 fail=0
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; pass=$((pass + 1)); }
@@ -84,7 +86,7 @@ else
   bad "gluetun is active — confirm a provider with port forwarding was chosen"
 fi
 
-# The remote-access door. Absent, and the six admin apps are LAN-only with no
+# The remote-access door. Absent, and the nine admin apps are LAN-only with no
 # way in from outside — which fails quietly, since the stack is otherwise fine.
 if jq -e '.services | has("wg-easy")' <<<"$rendered" >/dev/null; then
   ok "wg-easy is present"
@@ -186,7 +188,7 @@ esac
 # The *arr auth settings are the difference between a login prompt and an
 # anonymous admin session, and deleting them looks like tidying up. Verified:
 # with AUTH__REQUIRED unset to DisabledForLocalAddresses, GET / returns 200.
-for svc in sonarr radarr prowlarr; do
+for svc in sonarr radarr lidarr prowlarr; do
   prefix=$(tr '[:lower:]' '[:upper:]' <<<"$svc")
   if jq -e --arg m "${prefix}__AUTH__METHOD" --arg r "${prefix}__AUTH__REQUIRED" --arg s "$svc" \
        '.services[$s].environment | has($m) and has($r)' <<<"$rendered" >/dev/null; then
@@ -269,7 +271,11 @@ fi
 # SABnzbd runs post-processing scripts, so a public route to either is a shell
 # on the box. They are excluded structurally — by not being routed — and this is
 # what keeps it that way when someone adds a block "just to test something".
-if out=$(grep -nEi 'sonarr|radarr|prowlarr|bazarr|qbittorrent|sabnzbd|\bqbit\b|\bsab\b' caddy/sites.caddy \
+#
+# Cleanuparr is on this list for the same reason at one remove: it holds a
+# qBittorrent credential and every *arr API key, so a session on it reaches the
+# same command execution by proxy (decisions.md D30).
+if out=$(grep -nEi 'sonarr|radarr|lidarr|prowlarr|bazarr|qbittorrent|sabnzbd|cleanuparr|\bqbit\b|\bsab\b' caddy/sites.caddy \
          | grep -vE '^[0-9]+:\s*#'); then
   bad "an admin service appears in caddy/sites.caddy — it must not be routed"
   indent <<<"$out"
@@ -294,11 +300,33 @@ fi
 
 # .env is the single source of truth for a host port. A literal address or port
 # in the page is a second one, and the two drift silently.
-if out=$(grep -nE 'href="https?://[^"{]' caddy/site/index.html); then
-  bad "landing page hardcodes a host — admin links must come from {{env}}"
+#
+# data-lan is checked alongside href because D31 made it a second place an
+# address can be written — the hero tiles' LAN override. It is not an href, so
+# the original pattern walked straight past it.
+if out=$(grep -nE '(href|data-lan)="https?://[^"{]' caddy/site/index.html); then
+  bad "landing page hardcodes a host — links must come from {{env}}"
   indent <<<"$out"
 else
-  ok "landing page takes its admin host and ports from the environment"
+  ok "landing page takes its hosts and ports from the environment"
+fi
+
+# Every {{env}} the page reads has to be handed to the Caddy container, or it
+# expands to the empty string and renders http://10.0.0.5: as a live link —
+# a broken link, not an error. This is the one failure mode of D31 that looks
+# like nothing at all.
+missing=""
+mapfile -t page_envs < <(grep -oE '\{\{env "[A-Z_]+"\}\}' caddy/site/index.html \
+                         | sed -E 's/.*"(.*)".*/\1/' | sort -u)
+for var in ${page_envs[@]+"${page_envs[@]}"}; do
+  jq -e --arg v "$var" '.services.caddy.environment | has($v)' <<<"$rendered" >/dev/null \
+    || missing+=" $var"
+done
+if [[ -z "$missing" ]]; then
+  ok "every {{env}} the page reads is set on the caddy service (${#page_envs[@]})"
+else
+  bad "the page reads {{env}} names the caddy service does not set:$missing"
+  printf '      %s\n' "Caddy expands an unset name to '', rendering http://host: as a link."
 fi
 
 # nosniff is set on this site, so a file Caddy types wrongly is a blank page

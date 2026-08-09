@@ -19,8 +19,28 @@
   // and are not proxied: their hrefs are <lan-ip>:<port>, rendered server-side
   // from the environment, and this loop would overwrite them with URLs that
   // resolve nowhere.
+  //
+  // Where the tile is going and what gets probed are two different URLs now,
+  // and that is deliberate (decisions.md D31):
+  //
+  //   href    data-lan when Caddy rendered one — a client on the LAN or the
+  //           tunnel goes straight to http://<lan-ip>:<port> rather than out
+  //           to the public name and back in through the router.
+  //   probe   always the public name, because the probe cannot follow. This
+  //           page is served over HTTPS and a fetch from an https: origin to
+  //           an http: URL is blocked as active mixed content whatever
+  //           `mode: 'no-cors'` says — the same wall the Manage chips hit. If
+  //           the dots followed the links they would simply go dark indoors.
+  //
+  // The cost, stated plainly because nothing else will say it: the dot attests
+  // to the public path, not to the link under it. A wrong ADMIN_HOST or an
+  // unpublished port shows green. What it still catches is what it always
+  // caught — a route that has drifted out of sites.caddy, a client off the VPN,
+  // a stale DNS answer.
   for (const el of document.querySelectorAll('.tiles [data-sub]')) {
-    el.href = `${location.protocol}//${el.dataset.sub}.${location.host}`;
+    const derived = `${location.protocol}//${el.dataset.sub}.${location.host}`;
+    el.dataset.probe = derived;
+    el.href = el.dataset.lan || derived;
   }
 
   /* ── Reachability ─────────────────────────────────────────────────────────
@@ -53,7 +73,9 @@
 
   async function probeGroup(container) {
     const links = [...container.querySelectorAll('[data-sub]')];
-    const up = await Promise.all(links.map((el) => probe(el.href)));
+    // data-probe only exists on the hero tiles, where it may differ from href.
+    // The admin chips have nothing to fall back to, so they probe what they link.
+    const up = await Promise.all(links.map((el) => probe(el.dataset.probe || el.href)));
 
     // If nothing in the group answered, the instrument itself is not working —
     // no VPN, an untrusted certificate, an offline client — so report
@@ -72,8 +94,8 @@
 
   probeGroup(document.querySelector('.tiles'));
 
-  // The seven admin tools are only probed once someone opens the drawer, which
-  // saves seven cross-origin requests on the household visits that never do.
+  // The nine admin tools are only probed once someone opens the drawer, which
+  // saves nine cross-origin requests on the household visits that never do.
   //
   // Guarded twice.
   //
@@ -86,16 +108,19 @@
   // point at http://<lan-ip>:<port> — nothing proxies them and there is no
   // certificate for a private address. A fetch from an https: origin to an
   // http: URL is blocked as active mixed content whatever `mode: 'no-cors'`
-  // says, so all seven would reject, the group would be marked unreliable and
+  // says, so all nine would reject, the group would be marked unreliable and
   // the dots hidden. The visible result is identical either way; skipping is
   // honest about it and keeps the console clean. Clicking the chips is
   // unaffected — that is a navigation, not a subresource.
+  //
+  // This is exactly the wall the hero tiles' data-probe exists to step around:
+  // they have a public https name to probe instead, and the chips never did.
   const manage = document.querySelector('.manage');
   const admin = document.querySelector('.admin');
   if (manage && admin) {
     if (location.protocol === 'https:') {
       // Hide the dots outright rather than leaving them at their default grey.
-      // Skipping the probe alone would paint seven "unknown" dots that no
+      // Skipping the probe alone would paint nine "unknown" dots that no
       // longer mean anything, which is the wall of grey probeGroup avoids.
       admin.dataset.probes = 'unreliable';
     } else {
