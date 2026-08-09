@@ -310,8 +310,11 @@ Not a graceful reboot — cut power at the wall, restore it, and touch nothing.
 
 ```bash
 uptime
-docker compose -f /opt/mediaserver/docker-compose.yml ps
+docker compose -f ~/thorby-media/docker-compose.yml ps
 ```
+
+(`/opt/mediaserver` is `CONFIG_ROOT` — the app databases. The repo is a separate
+checkout, and its path is baked into the backup unit, so do not move it.)
 
 Every service `running`. This exercises BIOS `Restore on AC Power Loss: Power
 On` (§1.1), `systemctl is-enabled docker`, the fstab mounts coming up in the
@@ -529,8 +532,8 @@ itself rather than through s6. If it does not, the process holding read-write
 `/data` is root:
 
 ```bash
-docker compose exec cleanuparr id                             # uid=1000 gid=1000
-stat -c '%u %g %n' /mnt/disk1/data/torrents                   # 1000 1000
+docker compose exec cleanuparr id                             # uid=1001 gid=1001
+stat -c '%u %g %n' /mnt/disk1/data/torrents                   # 1001 1001
 ```
 
 Then the cleaners. Ship them off (spec §6 step 8) and turn them on one at a

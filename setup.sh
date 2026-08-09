@@ -158,7 +158,7 @@ EOF
     smartmontools intel-gpu-tools vainfo \
     msmtp msmtp-mta \
     unattended-upgrades fail2ban \
-    ufw curl git htop
+    ufw curl git htop jq
   ok "packages installed"
 
   run systemctl enable --now docker
@@ -448,6 +448,20 @@ create_media_user() {
     fi
   else
     warn "no 'render' group — the iGPU is likely disabled in BIOS (spec §1.1)"
+  fi
+
+  # The administrator still has to be able to read and repair the media tree by
+  # hand. The tree is 775 media:media, so group membership is what makes that
+  # possible without sudo — and without the containers getting a login account
+  # in exchange (spec §3.4). Only relevant when PUID is not the admin's own uid.
+  local admin=${SUDO_USER:-}
+  if [[ -n "$admin" && "$admin" != "$MEDIA_USER" ]]; then
+    if id -nG "$admin" 2>/dev/null | tr ' ' '\n' | grep -qx "$MEDIA_USER"; then
+      ok "$admin already in the $MEDIA_USER group"
+    else
+      run usermod -aG "$MEDIA_USER" "$admin"
+      ok "added $admin to the $MEDIA_USER group (log out and back in to pick it up)"
+    fi
   fi
 }
 

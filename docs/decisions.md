@@ -979,6 +979,68 @@ to work from both.
 
 ---
 
+## D32. The box as built departs from the spec in four places
+
+Everything before this entry was written against a machine that did not exist
+yet. Surveying the real one turned up four differences. None of them was a
+mistake in the spec so much as an assumption the hardware declined to honour,
+and each is recorded here because the spec still reads as though it were true.
+
+**The uid is 1001, not 1000.** Debian gave 1000 to `nick` at install time.
+`create_media_user` deliberately dies rather than bind the media tree to an
+account it did not create, so the choice was to reuse `nick` or to move the
+service user up. Moving it up is the better answer and not merely the compliant
+one: PUID is what the containers run as, so with `PUID=1000` a container escape
+would land *on the administrator's login*, sudo and all. At 1001 it lands on a
+nologin account with no sudo, which is what a service user is for. The tree was
+empty, so the re-chown cost nothing. `nick` joins the `media` group instead, and
+`setup.sh` now does that automatically for `$SUDO_USER`.
+
+The `${PUID:-1000}` fallbacks in `docker-compose.yml` and `init-tree.sh` were
+left alone. They describe the ordinary case; `.env` supplies this box's.
+
+**There is no Intel iGPU, and the GPU that is present cannot transcode.** The
+i7-8700K has UHD 630, but nothing appears at PCI `00:02.0` — it is switched off
+in the Z370's firmware. The only display adapter is a GTX 980 Ti, and `nouveau`
+is what currently backs `/dev/dri/renderD128`. VAAPI against that device does
+not transcode, so passing `/dev/dri` and setting `RENDER_GID` succeeds
+completely and achieves nothing, which is exactly the kind of silent success
+this repo tries to avoid.
+
+The board has no display output of its own, so the 980 Ti has to stay. It does
+not have to be the only one: `IGD Multi-Monitor` brings UHD 630 up headlessly as
+a second render node while the discrete card keeps driving the screen. VAAPI
+never needed a monitor. That is the fix, and it needs someone standing at the
+machine, so the stack was deployed without it. **Until that BIOS change lands,
+hardware transcoding is not working — `vainfo` is the only thing that settles
+it, and it must be run against the Intel node specifically, identified by
+`/sys/class/drm/*/device/vendor` reading `0x8086`.**
+
+**Networking is WiFi.** `wlp10s0` holds 192.168.0.10; all three onboard Killer
+E2500 ports are down for want of a cable, which arrives with the 10 TB disk.
+Nothing in `.env` names an interface so nothing needed changing, but two
+consequences are worth stating. The address is a DHCP lease, and a lease that
+moves takes the port-forwards, `CADDY_BIND_ADDR`, `ADMIN_HOST` and `WG_UI_BIND`
+with it — a router reservation is load-bearing, not tidiness. And every 4K remux
+and every WireGuard byte crosses the wireless link until the cable is in.
+
+**`/etc/fstab` carries `nofail` on both lines.** The spec's exact options are
+`defaults,noatime` and `bind`; the box was mounted by hand before this repo
+arrived and has `nofail` on each. It was kept. On a headless box in another
+room, a disk that fails to mount should not also mean a machine that will not
+boot — item 8 is about coming back up unattended.
+
+The cost is real and unguarded: with `nofail`, a failed mount leaves `/data` as
+an empty directory on the SSD and the containers cheerfully populate it, filling
+the root filesystem instead of failing. What limits the damage is that the
+underlying `/data` mountpoint is root-owned, so containers running as 1001
+cannot write to it and error instead. That is a property of the directory, not a
+check anything enforces — if someone ever `chown`s it while unmounted, the
+protection disappears silently. `RequiresMountsFor=` on the backup unit covers
+the backup path only.
+
+---
+
 ## Open
 
 Each of these blocks or shapes a deliverable. Answers go here once settled.

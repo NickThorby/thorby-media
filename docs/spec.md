@@ -180,15 +180,23 @@ uninterrupted. Splitting these across filesystems silently degrades to copying.
 Create a dedicated service user and use its UID/GID for all containers.
 
 ```
-groupadd -g 1000 media
-useradd -u 1000 -g 1000 -M -s /usr/sbin/nologin media
+groupadd -g 1001 media
+useradd -u 1001 -g 1001 -M -s /usr/sbin/nologin media
 chown -R media:media /mnt/disk1/data
 chmod -R 775 /mnt/disk1/data
 ```
 
-Set `PUID=1000` and `PGID=1000` in the container environment.
+Set `PUID=1001` and `PGID=1001` in the container environment.
 
-The `media` user must also be in the `render` group for `/dev/dri` access.
+1001 rather than 1000: Debian assigns 1000 to the first human account created
+during installation, so on this box it belongs to `nick`. `setup.sh` refuses to
+bind the media tree to an account it did not create. Keeping the service user
+off the administrator's uid is also what makes it a service user — a container
+escape lands on something with no shell and no sudo (decisions.md D32).
+
+The `media` user must also be in the `render` group for `/dev/dri` access, and
+the administrator should be in the `media` group so the 775 tree stays editable
+by hand without sudo. `setup.sh` does both.
 
 ### 3.5 SMART monitoring
 

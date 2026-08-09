@@ -53,9 +53,12 @@ requiring explicit justification.
    copying: double disk usage, slow imports, and seeding breaks. Nothing warns
    you. `scripts/test-hardlinks.sh` checks both download trees; `SRC_DIR` and
    `DST_DIR` override the pair it tests.
-3. **`PUID=1000` / `PGID=1000`** everywhere, matching the `media` user that owns
+3. **`PUID=1001` / `PGID=1001`** everywhere, matching the `media` user that owns
    `/mnt/disk1/data`. Jellyfin additionally needs the host's `render` GID via
-   `group_add` for `/dev/dri` access.
+   `group_add` for `/dev/dri` access. The number is 1001 because Debian already
+   gave 1000 to `nick`; the compose fallbacks still read `${PUID:-1000}`, which
+   is the usual case and not this box's — `.env` is what supplies the real value
+   (decisions.md D32).
 4. **Exactly three HTTP services are public: the landing page, Jellyfin and
    Jellyseerr.** They are served by Caddy at `{$PUBLIC_DOMAIN}` with ports 80
    and 443 forwarded from the router. The other nine apps are excluded
