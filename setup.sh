@@ -674,6 +674,61 @@ EOF
 #   - The container drops SYS_MODULE, so it cannot modprobe wireguard itself.
 #     The module is in-tree on Debian 13; loading it at boot is the cheaper half
 #     of that trade.
+# Hold the Docker daemon until the box actually has its address.
+#
+# Measured on the target after the first real reboot: networking.service
+# "Finished" 0.2s into boot having raised nothing -- /etc/network/interfaces
+# configures no interface, the WiFi is associated later by wpa_supplicant and
+# addressed later still by dhcpcd. network-online.target is therefore satisfied
+# almost immediately, which makes docker.service's After= on it worthless. The
+# interface associated five seconds AFTER Docker had started the containers.
+#
+# Three things broke, none of them loudly:
+#
+#   - wg-easy binds WG_UI_BIND and threw EADDRNOTAVAIL. Its web server died
+#     while wg-quick carried on, and its healthcheck only runs `wg show wg0`,
+#     so the container reported healthy with no admin interface at all. On a
+#     VPN-only box that is the remote front door.
+#   - Caddy publishes CADDY_BIND_ADDR:80 and :443. Docker could not create the
+#     bindings, and left the container running with no published ports --
+#     `docker port caddy` empty while `docker compose ps` said Up.
+#   - Container DNS did not work until the daemon was restarted, so Caddy could
+#     not resolve its own upstreams by container name.
+#
+# Waiting is bounded and deliberately non-fatal: if the address never appears
+# the daemon starts anyway, because a box that will not boot is worse than one
+# with a broken front door, and SSH is what you need in that case.
+configure_docker_boot_order() {
+  step "Docker boot ordering"
+
+  local addr=${CADDY_BIND_ADDR:-${ADMIN_HOST:-}}
+  if [[ -z "$addr" ]]; then
+    warn "CADDY_BIND_ADDR and ADMIN_HOST are both unset, so there is no address"
+    warn "  to wait for. Set one and re-run, or Caddy and wg-easy will lose a"
+    warn "  race with dhcpcd on every boot."
+    return 0
+  fi
+
+  local dir=/etc/systemd/system/docker.service.d
+  run mkdir -p "$dir"
+
+  write_file "$dir/10-wait-for-address.conf" 0644 <<EOF
+# Managed by setup.sh -- decisions.md D36.
+#
+# network-online.target is reached before this box has an address, so ordering
+# against it is not enough. Wait for the address Caddy and wg-easy bind.
+[Unit]
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStartPre=/bin/sh -c 'i=0; while [ \$i -lt 60 ]; do ip -4 -o addr show | grep -qw "${addr}" && exit 0; i=\$((i+1)); sleep 1; done; exit 0'
+EOF
+
+  run systemctl daemon-reload
+  ok "docker waits for ${addr} (up to 60s) before starting containers"
+}
+
 configure_wireguard_host() {
   step "WireGuard host prerequisites"
 
@@ -1130,6 +1185,7 @@ configure_smartd
 configure_unattended_upgrades
 harden_ssh
 install_backup_timer
+configure_docker_boot_order
 configure_wireguard_host
 configure_firewall
 report

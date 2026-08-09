@@ -1249,6 +1249,74 @@ exactly the silent success that file exists to catch.
 
 ---
 
+## D36. Docker must wait for an address, because network-online.target lies
+
+The first real reboot took the stack down and nothing said so. Worth reading in
+full, because every symptom pointed somewhere other than the cause.
+
+**What happened.** `networking.service` finished 0.2 seconds into boot having
+raised nothing — `/etc/network/interfaces` configures no interface on this box;
+the WiFi is associated later by `wpa_supplicant` and addressed later still by
+`dhcpcd`. `network-online.target` is satisfied by `networking.service` alone, so
+it was reached almost immediately, and `docker.service`'s `After=` on it meant
+nothing. From the journal:
+
+```
+12:12:48  networking.service Finished
+12:12:50  dockerd starts wg-easy
+12:12:53  wlp10s0 associated          <- three seconds too late
+```
+
+**Three failures, none of them loud:**
+
+- **wg-easy** binds the single address in `WG_UI_BIND` and threw
+  `EADDRNOTAVAIL`. Its web server died; `wg-quick` carried on and brought the
+  tunnel up. The healthcheck was `wg show wg0`, which passed. So the container
+  reported **healthy** for twenty-five minutes with no admin interface at all —
+  and on a VPN-only box that is the remote front door.
+- **Caddy** publishes `CADDY_BIND_ADDR:80` and `:443`. Docker could not create
+  the bindings and left the container running without them: `docker compose ps`
+  said `Up`, `docker port caddy` was empty, and every name in the house was
+  dead. It never recovered, because `restart: unless-stopped` does not retry a
+  container that is already running.
+- **Container DNS** was broken until the daemon was restarted. Containers could
+  reach `1.1.1.1` and the router directly, but the embedded resolver at
+  `127.0.0.11` would not forward, so Caddy could not resolve `bazarr` and
+  Jellyseerr's healthcheck spent its whole 5-second budget on a DNS timeout —
+  which then made Jellyseerr *unhealthy*, which blocked Caddy's `depends_on`,
+  which is why bringing it back by hand also failed at first.
+
+That last chain is the thing to remember: one root cause produced a symptom
+three services away, and the obvious reading of each symptom was wrong.
+
+**The fix is to make the ordering true rather than to work around it.**
+`setup.sh` writes a `docker.service` drop-in that waits for the address Caddy
+and wg-easy bind, up to 60 seconds. It is deliberately non-fatal — if the
+address never appears the daemon starts anyway, because a box that will not boot
+is worse than one with a broken front door, and SSH is what you need then.
+
+Enabling `ifupdown-wait-online.service` was the obvious alternative and does
+nothing here: it waits for interfaces `ifupdown` manages, and `ifupdown` manages
+none of them.
+
+**The healthcheck was also wrong, independently.** wg-easy's now tests the web
+UI as well as the tunnel. The two fail separately and the one that was checked
+was the one that could not break. A healthcheck that cannot observe the failure
+mode is worse than none, because it is read as evidence.
+
+**Not changed, and worth saying why.** Binding `0.0.0.0` instead would make
+`EADDRNOTAVAIL` impossible and was tempting. It was rejected because the wait
+fixes all three failures rather than one, and because a specific bind is a
+property `validate.sh` asserts and D26 reasons about; weakening it to work
+around a boot race would have traded a real invariant for a symptom.
+
+**Still unverified:** this was diagnosed and fixed after the reboot that
+exposed it. Verification item 8 is the test, and it has not been re-run — a
+graceful reboot exercises the same race, so it is worth doing before the power
+cut.
+
+---
+
 ## Open
 
 Each of these blocks or shapes a deliverable. Answers go here once settled.

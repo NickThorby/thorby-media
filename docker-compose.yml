@@ -539,7 +539,17 @@ services:
       - ${CONFIG_ROOT:-/opt/mediaserver}/wg-easy:/etc/wireguard
       - /lib/modules:/lib/modules:ro
     healthcheck:
-      test: ["CMD-SHELL", "wg show wg0 >/dev/null 2>&1 || exit 1"]
+      # Both halves, because they fail independently and the second one is the
+      # half that matters here. This checked only `wg show wg0`, and on the
+      # first real reboot wg-easy lost a race with dhcpcd: it threw
+      # EADDRNOTAVAIL binding WG_UI_BIND, its web server died, wg-quick carried
+      # on regardless, and the container sat there reporting healthy with no
+      # admin interface at all. On a VPN-only box that is the remote front door
+      # (decisions.md D36).
+      #
+      # The tunnel alone is not evidence the app is up, and the UI alone is not
+      # evidence the tunnel is. Ask for both.
+      test: ["CMD-SHELL", "wg show wg0 >/dev/null 2>&1 && wget -q -O /dev/null http://${WG_UI_BIND:-127.0.0.1}:${WG_UI_PORT:-51821}/ || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
