@@ -1,0 +1,109 @@
+# Admin routes — reachable from the LAN and the WireGuard tunnel, and from
+# nowhere else. Imported by Caddyfile alongside sites.caddy.
+#
+# ── Why these are in a separate file ─────────────────────────────────────────
+#
+# sites.caddy holds the routes that are allowed to be public if PUBLIC_HTTP is
+# ever set true. This file holds the routes that must never be, and
+# scripts/validate.sh still fails if any of these names appears in sites.caddy.
+# Keeping them apart means the question "could this be reached from the
+# internet" is answered by which file a block is in, not by reading it.
+#
+# ── What changed, and what it cost ───────────────────────────────────────────
+#
+# Until D33 these nine had no route at all, and that absence *was* the security
+# control — three mechanisms deep: no route, no DNS record, no path through
+# DOCKER-USER. D33 closed the public door entirely, which makes a route here
+# unreachable from the internet for as long as it stays closed.
+#
+# "For as long as it stays closed" is the whole risk. Flip PUBLIC_HTTP back to
+# true and forward 80/443, and every block below would answer the internet —
+# and qBittorrent runs an external program on completion while SABnzbd runs
+# post-processing scripts, both arbitrary command execution by design, with
+# Cleanuparr holding credentials for both plus every *arr API key. Pointing the
+# DNS at a private address does not help: it stops discovery, not a deliberate
+# request carrying a forged Host header.
+#
+# So the control moved into Caddy. Every block below imports `admin_only`,
+# which 403s any client outside RFC1918 before the proxy ever runs. That is a
+# genuine downgrade from "there is no route" to "the route refuses" — one
+# snippet now carries what three independent mechanisms carried before. It is
+# mechanical rather than careful only because validate.sh asserts that no block
+# in this file can exist without importing it (decisions.md D33, D34).
+#
+# Upstreams are container names on the compose bridge, so they must stay in
+# step with `container_name` in docker-compose.yml. The ports are the ports
+# INSIDE each container, which are not always the published ones — SABnzbd
+# listens on 8080 and is published on 8085.
+
+# The guard. `import common` is folded in so a block cannot pick up the logging
+# and headers while missing the access check.
+#
+# remote_ip reads the peer address off the connection, not X-Forwarded-For, so
+# a client cannot talk its way past this with a header. Nothing sits in front of
+# Caddy here — no CDN, no upstream proxy — so the peer address is the client.
+#
+# The three ranges must stay identical to the ones in sites.caddy's
+# private_only. A WireGuard subnet chosen outside them locks every tunnel client
+# out of every admin app at once; validate.sh checks WG_SUBNET against
+# private_only and the two lists are asserted equal.
+(admin_only) {
+	import common
+	@offnet not remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+	respond @offnet "Not available from this network." 403
+}
+
+sonarr.{$PUBLIC_DOMAIN} {
+	import admin_only
+	reverse_proxy sonarr:8989
+}
+
+radarr.{$PUBLIC_DOMAIN} {
+	import admin_only
+	reverse_proxy radarr:7878
+}
+
+lidarr.{$PUBLIC_DOMAIN} {
+	import admin_only
+	reverse_proxy lidarr:8686
+}
+
+prowlarr.{$PUBLIC_DOMAIN} {
+	import admin_only
+	reverse_proxy prowlarr:9696
+}
+
+bazarr.{$PUBLIC_DOMAIN} {
+	import admin_only
+	reverse_proxy bazarr:6767
+}
+
+qbit.{$PUBLIC_DOMAIN} {
+	import admin_only
+	reverse_proxy qbittorrent:8080
+}
+
+# 8080 inside the container; 8085 on the host. Proxying to the published port
+# would work and would be wrong: it would leave the bridge, hairpin off the host
+# address, and stop working the moment BIND_ADDR moves to loopback.
+sab.{$PUBLIC_DOMAIN} {
+	import admin_only
+	reverse_proxy sabnzbd:8080
+}
+
+cleanuparr.{$PUBLIC_DOMAIN} {
+	import admin_only
+	reverse_proxy cleanuparr:11011
+}
+
+# wg-easy is the exception: it runs with network_mode: host (D26), so it is not
+# on the compose bridge and cannot be addressed by container name. ADMIN_HOST is
+# the box's own LAN address, reached back out through the bridge gateway.
+#
+# It serves plain HTTP because INSECURE=true is set deliberately (D26), so this
+# is a normal proxy and not an https:// upstream with a self-signed certificate
+# to except.
+wg.{$PUBLIC_DOMAIN} {
+	import admin_only
+	reverse_proxy {$ADMIN_HOST}:{$WG_UI_PORT}
+}

@@ -317,10 +317,56 @@ fi
 # same command execution by proxy (decisions.md D30).
 if out=$(grep -nEi 'sonarr|radarr|lidarr|prowlarr|bazarr|qbittorrent|sabnzbd|cleanuparr|\bqbit\b|\bsab\b' caddy/sites.caddy \
          | grep -vE '^[0-9]+:\s*#'); then
-  bad "an admin service appears in caddy/sites.caddy — it must not be routed"
+  bad "an admin service appears in caddy/sites.caddy — it must not be routed there"
   indent <<<"$out"
 else
-  ok "no admin service is routed through Caddy"
+  ok "no admin service is routed in sites.caddy"
+fi
+
+# D34 moved the admin apps behind Caddy, so "there is no route" stopped being
+# the control and `admin_only` became it. One snippet now carries what three
+# independent mechanisms carried before, which is only acceptable while it is
+# impossible to add a block here without it. That is this check.
+# shellcheck disable=SC2016  # {$PUBLIC_DOMAIN} is Caddy's literal placeholder
+admin_routes=$({ grep -oE '^[a-z]+\.\{\$PUBLIC_DOMAIN\}' caddy/admin.caddy || true; } \
+               | sed -E 's/\..*//' | sort -u)
+admin_blocks=$(grep -cE '^[a-z]+\.\{\$PUBLIC_DOMAIN\} \{' caddy/admin.caddy || true)
+admin_guards=$(grep -cE '^[[:space:]]*import admin_only[[:space:]]*$' caddy/admin.caddy || true)
+if [[ "$admin_blocks" -gt 0 && "$admin_blocks" == "$admin_guards" ]]; then
+  ok "all $admin_blocks admin routes import admin_only"
+else
+  bad "admin.caddy has $admin_blocks route(s) but $admin_guards import admin_only"
+  printf '      every block in that file must import it, or it answers the internet\n'
+  printf '      the moment PUBLIC_HTTP is set true\n'
+fi
+
+# The guard is only as good as its ranges, and there are two copies of them —
+# here and in private_only. Narrowing one alone leaves tunnel clients matching
+# neither: locked out of the admin apps by this list, and losing the Manage
+# block by the other, with nothing to connect the two symptoms.
+admin_ranges=$(grep -m1 '@offnet not remote_ip' caddy/admin.caddy \
+               | sed -E 's/.*remote_ip //' | tr -s ' ' || true)
+priv_ranges=$(grep -m1 '@private remote_ip' caddy/sites.caddy \
+              | sed -E 's/.*remote_ip //' | tr -s ' ' || true)
+if [[ -n "$admin_ranges" && "$admin_ranges" == "$priv_ranges" ]]; then
+  ok "admin_only and private_only agree on the private ranges"
+else
+  bad "admin_only and private_only disagree on which addresses are private"
+  printf '      admin.caddy:  %s\n' "${admin_ranges:-<none found>}"
+  printf '      sites.caddy:  %s\n' "${priv_ranges:-<none found>}"
+fi
+
+# Same drift check the tiles get above, for the Manage chips. A chip whose
+# subdomain has no route fails at TLS rather than with a 404, which reads like
+# a certificate problem and sends you to the wrong place entirely.
+chips=$(sed -n '/class="manage"/,/<\/details>/p' caddy/site/index.html \
+        | { grep -oE 'data-sub="[a-z]+"' || true; } | sed -E 's/.*"(.*)"/\1/' | sort -u)
+if [[ "$chips" == "$admin_routes" ]]; then
+  ok "Manage chips match the admin routes"
+else
+  bad "Manage chips and admin.caddy routes disagree"
+  printf '      only on the page:  %s\n' "$(comm -23 <(echo "$chips") <(echo "$admin_routes") | tr '\n' ' ')"
+  printf '      only in caddy:     %s\n' "$(comm -13 <(echo "$chips") <(echo "$admin_routes") | tr '\n' ' ')"
 fi
 
 # Without `templates` the {{if}} in index.html renders as literal text AND the

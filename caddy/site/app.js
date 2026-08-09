@@ -10,37 +10,24 @@
 (() => {
   'use strict';
 
-  // The two public tiles are built from the current host rather than hardcoded,
-  // so this one file works unchanged at media.thorby.tech and at a dev sslip.io
-  // name — the port comes along for free, which a server-side template using
-  // PUBLIC_DOMAIN would lose.
+  // Every link on this page is a subdomain of the host serving it, so all of
+  // them are built the same way and none of them is written down. One file works
+  // unchanged whatever name the page is reached under.
   //
-  // Scoped to .tiles on purpose. The admin chips are not subdomains of anything
-  // and are not proxied: their hrefs are <lan-ip>:<port>, rendered server-side
-  // from the environment, and this loop would overwrite them with URLs that
-  // resolve nowhere.
+  // This loop used to be scoped to .tiles, because the admin chips were not
+  // proxied: their hrefs were <lan-ip>:<port> rendered server-side, and this
+  // would have overwritten them with URLs that resolved nowhere. D34 routed them
+  // through Caddy, so they are ordinary subdomains now and the exception is gone.
   //
-  // Where the tile is going and what gets probed are two different URLs now,
-  // and that is deliberate (decisions.md D31):
-  //
-  //   href    data-lan when Caddy rendered one — a client on the LAN or the
-  //           tunnel goes straight to http://<lan-ip>:<port> rather than out
-  //           to the public name and back in through the router.
-  //   probe   always the public name, because the probe cannot follow. This
-  //           page is served over HTTPS and a fetch from an https: origin to
-  //           an http: URL is blocked as active mixed content whatever
-  //           `mode: 'no-cors'` says — the same wall the Manage chips hit. If
-  //           the dots followed the links they would simply go dark indoors.
-  //
-  // The cost, stated plainly because nothing else will say it: the dot attests
-  // to the public path, not to the link under it. A wrong ADMIN_HOST or an
-  // unpublished port shows green. What it still catches is what it always
-  // caught — a route that has drifted out of sites.caddy, a client off the VPN,
-  // a stale DNS answer.
-  for (const el of document.querySelectorAll('.tiles [data-sub]')) {
-    const derived = `${location.protocol}//${el.dataset.sub}.${location.host}`;
-    el.dataset.probe = derived;
-    el.href = el.dataset.lan || derived;
+  // That also repairs the compromise D31 had to record. href and probe were two
+  // different URLs, because a page served over HTTPS cannot fetch an
+  // http://<lan-ip>:<port> URL — blocked as active mixed content whatever
+  // `mode: 'no-cors'` claims — so the dots either followed the links and went
+  // dark indoors, or attested to a URL that was not the one under them. Every
+  // link is https on a real certificate now, so a dot means the thing beneath it
+  // answered, which is what anyone reading it assumed all along.
+  for (const el of document.querySelectorAll('[data-sub]')) {
+    el.href = `${location.protocol}//${el.dataset.sub}.${location.host}`;
   }
 
   /* ── Reachability ─────────────────────────────────────────────────────────
@@ -73,9 +60,9 @@
 
   async function probeGroup(container) {
     const links = [...container.querySelectorAll('[data-sub]')];
-    // data-probe only exists on the hero tiles, where it may differ from href.
-    // The admin chips have nothing to fall back to, so they probe what they link.
-    const up = await Promise.all(links.map((el) => probe(el.dataset.probe || el.href)));
+    // Probing exactly what is linked. There was a data-probe indirection here
+    // while the two could differ; since D34 they cannot.
+    const up = await Promise.all(links.map((el) => probe(el.href)));
 
     // If nothing in the group answered, the instrument itself is not working —
     // no VPN, an untrusted certificate, an offline client — so report

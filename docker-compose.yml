@@ -423,28 +423,18 @@ services:
       # fine and then fails every renewal, which is a fault that surfaces sixty
       # days later rather than now.
       CF_API_TOKEN: ${CF_API_TOKEN:?CF_API_TOKEN is unset — Caddy needs it for the DNS-01 challenge}
-      # The address the Manage links point at, and the ports they use. Templated
-      # into the landing page at request time so .env stays the only place a
-      # host port is written down.
+      # Both of these are read by caddy/admin.caddy, to proxy the wg-easy UI.
+      # wg-easy runs with host networking (D26), so it is the one upstream that
+      # cannot be named by container: it has to be addressed at the box's own
+      # LAN address and port.
       #
-      # JELLYFIN_PORT and SEERR_PORT are here for the two *public* tiles, which
-      # are proxied and so never needed a port before. A client on the LAN or the
-      # tunnel is now sent straight to <lan-ip>:<port> instead of back out
-      # through the domain, and that needs the same treatment (D31).
-      #
-      # A name missing from this block does not fail — {{env}} expands to the
-      # empty string and the page renders http://10.0.0.5: as a live link.
+      # This block used to carry a port for every service, because the landing
+      # page templated <lan-ip>:<port> into each Manage link. Since D34 the page
+      # reads no environment at all — every link is a subdomain of whatever host
+      # served the page, built client-side from data-sub — so those ten
+      # variables were removed rather than left to rot. validate.sh checks the
+      # remaining direction, that anything the page does read is set here.
       ADMIN_HOST: ${ADMIN_HOST:?ADMIN_HOST is unset — the LAN address of this box}
-      JELLYFIN_PORT: ${JELLYFIN_PORT:-8096}
-      SEERR_PORT: ${SEERR_PORT:-5055}
-      SONARR_PORT: ${SONARR_PORT:-8989}
-      RADARR_PORT: ${RADARR_PORT:-7878}
-      LIDARR_PORT: ${LIDARR_PORT:-8686}
-      PROWLARR_PORT: ${PROWLARR_PORT:-9696}
-      BAZARR_PORT: ${BAZARR_PORT:-6767}
-      SAB_PORT: ${SAB_PORT:-8085}
-      QBIT_PORT: ${QBIT_PORT:-8080}
-      CLEANUPARR_PORT: ${CLEANUPARR_PORT:-11011}
       WG_UI_PORT: ${WG_UI_PORT:-51821}
       # Relocated off Caddy's default /data. In this stack /data means the media
       # root in every container; having one container where it means something
@@ -453,6 +443,10 @@ services:
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/sites.caddy:/etc/caddy/sites.caddy:ro
+      # The admin routes, which refuse any client outside RFC1918 (D34). A
+      # missing mount here is not a soft failure: Caddyfile imports it, so Caddy
+      # refuses to start rather than quietly serving nine fewer names.
+      - ./caddy/admin.caddy:/etc/caddy/admin.caddy:ro
       # The landing page. Three static files served by the proxy that is already
       # running — no separate container, and no build step to run first.
       # A bind mount read per request, so edits here are live without a restart.

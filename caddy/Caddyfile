@@ -43,4 +43,9 @@
 	acme_dns cloudflare {env.CF_API_TOKEN}
 }
 
+# Two route files, and the split is the point. sites.caddy holds what may be
+# public if PUBLIC_HTTP is ever true; admin.caddy holds what must never be, and
+# every block in it refuses any client outside RFC1918. Which file a block lives
+# in answers "could the internet reach this" without reading the block.
 import sites.caddy
+import admin.caddy

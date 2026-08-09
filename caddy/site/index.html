@@ -76,18 +76,17 @@
 
   <!-- The two tiles anyone in the house needs. Watch, or ask for something new.
 
-       data-sub is the public subdomain and stays whatever the client is —
-       app.js builds the public URL from it, and validate.sh checks that set
-       against the routes in sites.caddy.
+       data-sub is the subdomain; app.js builds the URL from it and the host the
+       page was served under, and validate.sh checks that set against the routes
+       in sites.caddy.
 
-       data-lan is the override, rendered only for a client on the LAN or the
-       tunnel. Where it is present the tile navigates straight to the container
-       instead of leaving the house and hairpinning back through the router.
-       app.js still *probes* the public name either way — see the comment there,
-       and decisions.md D31 for what that costs. -->
+       There was a data-lan override here, rendered only for LAN and tunnel
+       clients, so a tile went straight to the container instead of leaving the
+       house and hairpinning back through the router (D31). Under D33 the name
+       already resolves to the box's LAN address, so there is nothing to route
+       around and one URL is right from everywhere. -->
   <nav class="tiles" aria-label="Main">
-    <a class="tile" data-sub="jellyfin" href="#"
-       {{if eq (.Req.Header.Get "X-Local-Client") "1"}}data-lan="http://{{env "ADMIN_HOST"}}:{{env "JELLYFIN_PORT"}}"{{end}}>
+    <a class="tile" data-sub="jellyfin" href="#">
       <span class="plate" aria-hidden="true"><svg><use href="#i-jellyfin"/></svg></span>
       <span class="tile__text">
         <span class="tile__title">Watch</span>
@@ -98,8 +97,7 @@
       <span class="tile__arrow" aria-hidden="true"><svg><use href="#i-arrow"/></svg></span>
     </a>
 
-    <a class="tile" data-sub="seerr" href="#"
-       {{if eq (.Req.Header.Get "X-Local-Client") "1"}}data-lan="http://{{env "ADMIN_HOST"}}:{{env "SEERR_PORT"}}"{{end}}>
+    <a class="tile" data-sub="seerr" href="#">
       <span class="plate" aria-hidden="true"><svg><use href="#i-jellyseerr"/></svg></span>
       <span class="tile__text">
         <span class="tile__title">Request</span>
@@ -133,8 +131,7 @@
       <span class="manage__chev" aria-hidden="true"><svg><use href="#i-chev"/></svg></span>
     </summary>
     <div class="admin">
-      <a class="chip" data-sub="sonarr"
-         href="http://{{env "ADMIN_HOST"}}:{{env "SONARR_PORT"}}">
+      <a class="chip" data-sub="sonarr" href="#">
         <span class="plate" aria-hidden="true"><svg><use href="#i-sonarr"/></svg></span>
         <span class="chip__text">
           <span class="chip__name">Sonarr</span>
@@ -143,8 +140,7 @@
         </span>
         <span class="dot" data-state="unknown" aria-hidden="true"></span>
       </a>
-      <a class="chip" data-sub="radarr"
-         href="http://{{env "ADMIN_HOST"}}:{{env "RADARR_PORT"}}">
+      <a class="chip" data-sub="radarr" href="#">
         <span class="plate" aria-hidden="true"><svg><use href="#i-radarr"/></svg></span>
         <span class="chip__text">
           <span class="chip__name">Radarr</span>
@@ -153,8 +149,7 @@
         </span>
         <span class="dot" data-state="unknown" aria-hidden="true"></span>
       </a>
-      <a class="chip" data-sub="lidarr"
-         href="http://{{env "ADMIN_HOST"}}:{{env "LIDARR_PORT"}}">
+      <a class="chip" data-sub="lidarr" href="#">
         <span class="plate" aria-hidden="true"><svg><use href="#i-lidarr"/></svg></span>
         <span class="chip__text">
           <span class="chip__name">Lidarr</span>
@@ -163,8 +158,7 @@
         </span>
         <span class="dot" data-state="unknown" aria-hidden="true"></span>
       </a>
-      <a class="chip" data-sub="prowlarr"
-         href="http://{{env "ADMIN_HOST"}}:{{env "PROWLARR_PORT"}}">
+      <a class="chip" data-sub="prowlarr" href="#">
         <span class="plate" aria-hidden="true"><svg><use href="#i-prowlarr"/></svg></span>
         <span class="chip__text">
           <span class="chip__name">Prowlarr</span>
@@ -173,8 +167,7 @@
         </span>
         <span class="dot" data-state="unknown" aria-hidden="true"></span>
       </a>
-      <a class="chip" data-sub="bazarr"
-         href="http://{{env "ADMIN_HOST"}}:{{env "BAZARR_PORT"}}">
+      <a class="chip" data-sub="bazarr" href="#">
         <span class="plate" aria-hidden="true"><svg><use href="#i-bazarr"/></svg></span>
         <span class="chip__text">
           <span class="chip__name">Bazarr</span>
@@ -183,8 +176,7 @@
         </span>
         <span class="dot" data-state="unknown" aria-hidden="true"></span>
       </a>
-      <a class="chip" data-sub="sab"
-         href="http://{{env "ADMIN_HOST"}}:{{env "SAB_PORT"}}">
+      <a class="chip" data-sub="sab" href="#">
         <span class="plate" aria-hidden="true"><svg><use href="#i-sabnzbd"/></svg></span>
         <span class="chip__text">
           <span class="chip__name">SABnzbd</span>
@@ -193,8 +185,7 @@
         </span>
         <span class="dot" data-state="unknown" aria-hidden="true"></span>
       </a>
-      <a class="chip" data-sub="qbit"
-         href="http://{{env "ADMIN_HOST"}}:{{env "QBIT_PORT"}}">
+      <a class="chip" data-sub="qbit" href="#">
         <span class="plate" aria-hidden="true"><svg><use href="#i-qbittorrent"/></svg></span>
         <span class="chip__text">
           <span class="chip__name">qBittorrent</span>
@@ -203,8 +194,7 @@
         </span>
         <span class="dot" data-state="unknown" aria-hidden="true"></span>
       </a>
-      <a class="chip" data-sub="cleanuparr"
-         href="http://{{env "ADMIN_HOST"}}:{{env "CLEANUPARR_PORT"}}">
+      <a class="chip" data-sub="cleanuparr" href="#">
         <span class="plate" aria-hidden="true"><svg><use href="#i-cleanuparr"/></svg></span>
         <span class="chip__text">
           <span class="chip__name">Cleanuparr</span>
@@ -217,8 +207,7 @@
            because it is the only one that is infrastructure rather than a
            media app — but it is an admin surface like the rest, so it gets a
            chip and audit-auth.sh checks it. -->
-      <a class="chip" data-sub="wg"
-         href="http://{{env "ADMIN_HOST"}}:{{env "WG_UI_PORT"}}">
+      <a class="chip" data-sub="wg" href="#">
         <span class="plate" aria-hidden="true"><svg><use href="#i-wireguard"/></svg></span>
         <span class="chip__text">
           <span class="chip__name">WireGuard</span>
