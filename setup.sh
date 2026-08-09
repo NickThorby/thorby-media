@@ -647,10 +647,20 @@ configure_smartd() {
 ${dev_spec} -a -o on -S on -s (S/../.././02|L/../../6/03)${mail_opts}
 EOF
 
-  run systemctl enable --now smartd
-  run systemctl restart smartd
-  ok "smartd enabled: short test daily 02:00, long test Saturday 03:00"
-  info "send a test alert by adding -M test to the device line, then: systemctl restart smartd"
+  # Debian packages the daemon as smartmontools.service and ships
+  # /etc/systemd/system/smartd.service as an alias symlink. systemd refuses to
+  # enable a linked unit, and because this runs under `set -e` that one failure
+  # exits the script — silently skipping the firewall, the SSH hardening and the
+  # WireGuard prerequisites, which all come after it. Ask for the real name.
+  local smartd_unit=smartd
+  if systemctl list-unit-files --no-legend smartmontools.service 2>/dev/null | grep -q .; then
+    smartd_unit=smartmontools
+  fi
+
+  run systemctl enable --now "$smartd_unit"
+  run systemctl restart "$smartd_unit"
+  ok "smartd enabled via ${smartd_unit}.service: short test daily 02:00, long test Saturday 03:00"
+  info "send a test alert by adding -M test to the device line, then: systemctl restart $smartd_unit"
   info "remove -M test afterwards, or every restart will mail you"
 }
 
