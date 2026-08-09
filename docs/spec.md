@@ -321,25 +321,27 @@ browser playback and remote clients.
 
 ### 5.1 Access model
 
-There are two doors, and which one you use depends on who you are.
+**There is one door: WireGuard** (decisions.md D33). This section described two
+until the box was built; the public one is closed.
 
-- **The household — public.** `media.thorby.tech` over the internet: the landing
-  page, Jellyfin and Jellyseerr, and nothing else. Ports 80 and 443 are
-  forwarded from the router to Caddy. No VPN, no app to install.
-- **The administrator — WireGuard.** The nine admin apps are reached at
-  `<lan-ip>:<port>`, directly, with no proxy in front of them. On the LAN that
-  works already; from anywhere else, bring up the tunnel first and the same
-  address works. Nothing about them is public, and nothing about them is routed.
-- **Local LAN:** direct access to all services by IP and port, unchanged. Since
-  D31 the landing page sends local clients to Jellyfin and Jellyseerr this way
-  too, rather than back out through the public name and in through the router.
-- **Apple TV:** Infuse connects to Jellyfin over LAN. Remote playback goes
-  through the public Jellyfin name rather than the VPN, so the Apple TV needs no
-  client of its own.
+- **At home — direct.** Every service is reached at `<lan-ip>:<port>` on the
+  LAN, and the three served names (`media.thorby.tech`, `jellyfin.` and
+  `seerr.`) resolve to that same LAN address. Nothing leaves the house.
+- **Away — WireGuard first.** The tunnel puts the peer on the LAN, so every
+  address above works unchanged from anywhere. This applies to the household as
+  well as the administrator; there is no unauthenticated path in for anyone.
+- **Apple TV:** Infuse connects to Jellyfin over the LAN and needs no client of
+  its own at home. A set taken elsewhere needs the WireGuard tvOS app.
+- **The router forwards `WG_PORT` and nothing else.** No 80, no 443. `.env`'s
+  `PUBLIC_HTTP` switch gates that, and `setup.sh` closes those ports if an
+  earlier run opened them.
 
-The asymmetry is the point. The two apps the household needs are the two whose
-worst case is a leaked media library; the ones it does not need are those whose
-worst case is a shell (§5.3).
+Certificates therefore come from **DNS-01** against the Cloudflare zone, since
+no HTTP-01 challenge can reach a box with nothing forwarded (`caddy/Dockerfile`).
+
+The old asymmetry — the two apps the household needs are the two whose worst
+case is a leaked library, the rest have a worst case of a shell — still shapes
+§5.3, and is now defence in depth rather than the boundary itself.
 
 ### 5.2 Caddy
 
@@ -373,17 +375,19 @@ is arbitrary command execution by design; a valid session is equivalent to a
 shell. The *arr apps authenticate API access by a key visible in their own UI.
 Neither was designed for hostile network exposure.
 
-Since §5.1 now forwards ports from the router, this constraint needs a
-mechanism rather than a promise. It has three, in order of how hard they are to
-undo by accident:
+Under D33 the router forwards nothing but the WireGuard port, so the first-order
+answer is that no packet from the internet reaches any of them at all. The three
+mechanisms below are kept anyway, because they are what makes that still true
+the day someone sets `PUBLIC_HTTP=true` — which is exactly the day nobody will
+re-derive this reasoning:
 
 1. **No route.** Those eight are absent from `caddy/sites.caddy`, so the proxy
    has nowhere to send a request for them even if one arrived. Asserted by
    `validate.sh`.
-2. **No DNS.** Only three names exist publicly. Nothing resolves to the box for
-   the other eight.
-3. **No packet.** The `DOCKER-USER` chain returns only ports 80 and 443 from
-   off-box; a WAN packet aimed at 8989 is DNAT'd to Sonarr and then dropped.
+2. **No DNS.** Only three names resolve to the box, and they resolve to a
+   private address. Nothing resolves at all for the other eight.
+3. **No packet.** The `DOCKER-USER` chain drops anything arriving off-box; with
+   `PUBLIC_HTTP=false` not even 80 and 443 are returned.
 
 **Cleanuparr is on that list at one remove, and belongs there.** It runs no
 scripts of its own, but it holds the qBittorrent WebUI credential and every *arr

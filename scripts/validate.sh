@@ -243,11 +243,19 @@ fi
 echo
 echo "Caddy"
 
-if out=$(docker run --rm -e PUBLIC_DOMAIN=validate.example.com \
+# Validated against the image this stack actually runs, not stock caddy:alpine.
+# `acme_dns cloudflare` only parses in a binary with that module compiled in, so
+# the stock image would report a syntax error in a file that is correct. Docker's
+# layer cache makes the build a no-op unless caddy/Dockerfile changed.
+if ! out=$(docker build -q -t mediaserver/caddy:latest ./caddy 2>&1); then
+  bad "caddy image failed to build from caddy/Dockerfile"
+  tail -5 <<<"$out" | indent
+elif out=$(docker run --rm -e PUBLIC_DOMAIN=validate.example.com \
            -e ACME_EMAIL=validate@example.com \
-           -v "$PWD/caddy:/etc/caddy:ro" caddy:alpine \
+           -e CF_API_TOKEN=validate-placeholder \
+           -v "$PWD/caddy:/etc/caddy:ro" mediaserver/caddy:latest \
            caddy validate --config /etc/caddy/Caddyfile 2>&1); then
-  ok "caddy/Caddyfile valid (sites.caddy imported)"
+  ok "caddy/Caddyfile valid (sites.caddy imported, cloudflare module present)"
 else
   bad "caddy/Caddyfile invalid"
   tail -5 <<<"$out" | indent

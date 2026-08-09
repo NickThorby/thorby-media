@@ -1041,6 +1041,96 @@ the backup path only.
 
 ---
 
+## D33. One door, not two: the stack is VPN-only
+
+D25 built two doors — a public one at `media.thorby.tech` for the household and
+WireGuard for the administrator. The public one is closed. Nothing is forwarded
+from the router except `WG_PORT`, and all three served names resolve to the
+box's LAN address, so reaching Jellyfin from outside the house means bringing up
+the tunnel first.
+
+**What forced the question.** The domain turned out to be proxied through
+Cloudflare rather than pointing at the WAN address, and unpicking that surfaced
+four separate problems with the public door as designed. Universal SSL covers
+one subdomain level, so `jellyfin.media.thorby.tech` — a third-level name — would
+have thrown certificate errors. Every request would have arrived from a
+Cloudflare address, so the `caddy-auth` jail would have banned Cloudflare rather
+than an attacker, and Jellyfin would have seen one client. Proxying video is
+against Cloudflare's terms in the first place. And HTTP-01 still needed port 80
+open to the origin, so the proxy bought nothing it was being kept for.
+
+Grey-clouding all four records would have fixed all four. The reason not to is
+that it was never the requirement: the household watches at home, over the LAN,
+through Infuse — a path that touches neither Caddy nor the internet. The public
+door existed for watching *away* from home, and a tunnel does that too.
+
+**What it costs.** Every household member needs a WireGuard peer on every device
+they watch away from home on, and someone has to generate those. Jellyseerr
+requests need the tunnel up. An Apple TV taken to another house needs the
+WireGuard tvOS app. Against that: the attack surface reachable from the internet
+is one UDP port that does not answer an unauthenticated probe.
+
+**Why not Tailscale, again.** Reopening D26 was the obvious move, since MagicDNS
+and automatic `*.ts.net` certificates would have solved naming and TLS for free
+with no port forward at all. Two of D26's arguments got *stronger* under
+VPN-only rather than weaker:
+
+- *Relay fallback.* Tailscale hole-punches and falls back to DERP relays when it
+  cannot. That is fine for the admin traffic D26 was sizing for and unusable for
+  a 4K remux. A forwarded UDP port makes wg-easy always-direct. The port can be
+  forwarded, so the guaranteed path is free.
+- *Third party in the critical path.* Under two doors, a Tailscale outage cost
+  the administrator their tools while the household kept watching. Under one
+  door it costs everyone everything, including the television.
+
+D26's LAN-routing objection also scales badly here: Tailscale only puts a peer
+on the LAN if the box advertises routes *and* every client accepts them, and
+under VPN-only that would have to be true on every household device rather than
+just the administrator's.
+
+**Certificates move to DNS-01.** With no inbound path, HTTP-01 cannot complete —
+Let's Encrypt would knock on a port the router does not answer. DNS-01 needs no
+inbound path, only a token that can write a TXT record. That requires the
+Cloudflare provider module, and Caddy's modules are compiled in rather than
+loaded at runtime, so `caddy/Dockerfile` now exists and Caddy is the one built
+image in the stack. The Caddyfile's old comment cited "nothing else in this repo
+has a build step" as the reason for choosing HTTP-01; that reasoning held while
+port 80 was open and stopped holding when it closed.
+
+Plain HTTP was the alternative, and defensible — D26 already accepted exactly
+that for the admin UIs, reasoning that WireGuard encrypts the transit and the
+LAN was plaintext anyway. Real certificates won because Jellyseerr has a login
+form, browsers are getting steadily less tolerant of password fields on `http:`,
+and the cost turned out to be one Dockerfile and one scoped token.
+
+**Private addresses in public DNS.** The three names have real records in a
+public zone pointing at `192.168.0.10`. That is deliberate: it needs no
+split-horizon resolver, no `WG_DNS` pointing at something we run, and it
+resolves identically on the LAN and over the tunnel. The address is useless to
+anyone who resolves it from the internet. The one failure mode to know about is
+resolvers that strip RFC1918 answers as DNS-rebinding protection — some home
+routers do. If that ever bites, the fix is a resolver on the box pushed to peers
+via `WG_DNS`, not a change to this decision.
+
+**`PUBLIC_HTTP` is the switch, and it fails closed.** `setup.sh` opens 80/443
+only when it is `true`, and when it is not, *deletes* those rules rather than
+merely not adding them — the script is how the model gets changed, and a rule
+surviving from a previous run is an opening that `ufw status` displays and
+nobody reads. The `DOCKER-USER` port-80/443 RETURNs are gated on the same
+variable.
+
+**The structural exclusion of the nine admin apps stays.** No route, no record,
+no path through `DOCKER-USER`, and `validate.sh` still fails if one of those
+names appears in `sites.caddy` at all. It protects nothing extra today, when
+nothing is public. It is what keeps the model honest if `PUBLIC_HTTP` is ever
+flipped back, which is exactly the moment nobody will re-derive it.
+
+**Supersedes, in part:** D25's public half; D1's "except 80, 443 and the
+WireGuard port", which is now just the WireGuard port; the Caddyfile's rejection
+of DNS-01; and spec §5.3's exposure model. D26 is reaffirmed, not superseded.
+
+---
+
 ## Open
 
 Each of these blocks or shapes a deliverable. Answers go here once settled.

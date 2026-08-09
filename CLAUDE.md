@@ -59,14 +59,26 @@ requiring explicit justification.
    gave 1000 to `nick`; the compose fallbacks still read `${PUID:-1000}`, which
    is the usual case and not this box's — `.env` is what supplies the real value
    (decisions.md D32).
-4. **Exactly three HTTP services are public: the landing page, Jellyfin and
-   Jellyseerr.** They are served by Caddy at `{$PUBLIC_DOMAIN}` with ports 80
-   and 443 forwarded from the router. The other nine apps are excluded
-   *structurally*, not carefully: they have **no route** in `caddy/sites.caddy`,
-   **no public DNS record**, and the `DOCKER-USER` chain returns only 80/443
-   from off-box. Any one of those alone would do; the point is that adding a
-   route is not enough to expose one by accident, and `validate.sh` fails if any
-   of those names appears in the routes file at all.
+4. **Nothing is reachable from the internet except the WireGuard port
+   (decisions.md D33).** The stack is VPN-only. Three names are *served* — the
+   landing page, Jellyfin and Jellyseerr, at `{$PUBLIC_DOMAIN}` — but all three
+   resolve to the box's LAN address, so reaching them from outside the house
+   means bringing up the tunnel first. `PUBLIC_HTTP` in `.env` is the switch;
+   at `false`, `setup.sh` opens no HTTP port and actively closes 80/443 if a
+   previous run opened them.
+
+   Certificates therefore come from **DNS-01**, not HTTP-01 — there is no
+   inbound path for a challenge. That needs the Cloudflare provider module
+   compiled in, which is why `caddy/Dockerfile` exists and Caddy is the one
+   built image in the stack.
+
+   The other nine apps are excluded *structurally*, not carefully: they have
+   **no route** in `caddy/sites.caddy`, **no DNS record**, and the
+   `DOCKER-USER` chain drops anything arriving off-box. Any one of those alone
+   would do; the point is that adding a route is not enough to expose one by
+   accident, and `validate.sh` fails if any of those names appears in the routes
+   file at all. **That exclusion stays even though nothing is public** — it is
+   what keeps the model true if `PUBLIC_HTTP` is ever flipped back.
 
    qBittorrent's "run external program on completion" and SABnzbd's
    post-processing scripts are both arbitrary command execution by design — a
@@ -78,9 +90,9 @@ requiring explicit justification.
    client is local (decisions.md D31). That changes which URL a household
    browser navigates to; it changes nothing about what is routed or resolvable.
 
-   The router also forwards **UDP `WG_PORT`**, and that does not weaken the
-   above: a WireGuard port does not answer an unauthenticated probe at all, so
-   it adds no reachable surface. `WG_UI_PORT` is never forwarded.
+   The router forwards **UDP `WG_PORT`** and nothing else, and that does not
+   weaken the above: a WireGuard port does not answer an unauthenticated probe
+   at all, so it adds no reachable surface. `WG_UI_PORT` is never forwarded.
 
    Admin access is WireGuard plus `<lan-ip>:<port>`, with nothing proxying it.
    Service ports publish on the LAN via `BIND_ADDR`, which is intended and is
@@ -145,6 +157,7 @@ README.md                 operator-facing: build, configure, migrate
 docker-compose.yml        the stack (deliverable §9.1)
 setup.sh                  host provisioning for Debian (deliverable §9.4)
 caddy/
+  Dockerfile              Caddy + the Cloudflare DNS module, for DNS-01
   Caddyfile               certificate issuance only; imports sites.caddy
   sites.caddy             the routes, plus the `common` and `private_only` snippets
   site/                   the landing page, served by Caddy at the bare domain
@@ -176,8 +189,11 @@ docs/
   flags. Do not reintroduce an override file; if something needs to vary, it
   varies through `.env`.
 - **Images:** `lscr.io/linuxserver/*` for the app stack (they provide the
-  `PUID`/`PGID`/`TZ` contract this design depends on), `caddy:alpine` for the
-  proxy. Do not substitute other maintainers' images.
+  `PUID`/`PGID`/`TZ` contract this design depends on). Do not substitute other
+  maintainers' images. **Caddy is the one exception and is built, not pulled**
+  — `caddy/Dockerfile` compiles the Cloudflare DNS module into upstream's own
+  builder image, which is Caddy's documented way to add a module and not a
+  third party's rebuild. It is the only `build:` in the stack; keep it that way.
 - **Everything host-specific comes from `.env`** — UID/GID, timezone, paths,
   render GID, LAN subnet, remote-access settings. No host-specific value is
   hardcoded in `docker-compose.yml`.
@@ -235,7 +251,9 @@ loopback and is a real fault afterwards, so it warns rather than failing.
 
 It needs GNU `stat`, bash 5 and a Docker daemon, so it runs on the box rather
 than on a workstation. `shellcheck` and `caddy` are not installed as packages;
-`validate.sh` shells out to `koalaman/shellcheck` and `caddy:alpine`.
+`validate.sh` shells out to `koalaman/shellcheck`, and builds `caddy/Dockerfile`
+to validate the Caddyfile against a binary that actually has the `acme_dns`
+directive — stock `caddy:alpine` reports a syntax error on a correct file.
 
 With the stack up, two more:
 

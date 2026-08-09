@@ -393,7 +393,13 @@ services:
   # on the LAN or over WireGuard, so there is no public route to them to get
   # wrong (decisions.md D25, D26, D29, D30, spec §5.3).
   caddy:
-    image: caddy:alpine
+    # Built, not pulled: DNS-01 needs the Cloudflare provider module compiled
+    # in, because there is no inbound path for an HTTP-01 challenge on a
+    # VPN-only box (caddy/Dockerfile, decisions.md D33). `image:` alongside
+    # `build:` fixes the tag so validate.sh can reuse it.
+    build:
+      context: ./caddy
+    image: mediaserver/caddy:latest
     container_name: caddy
     restart: unless-stopped
     logging: *logging
@@ -411,6 +417,12 @@ services:
       # default so the variable is never present-but-empty, which would leave
       # `acme_ca` with no argument.
       CADDY_ACME_CA: ${CADDY_ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+      # Cloudflare API token for the DNS-01 challenge. Scoped to Zone:DNS:Edit
+      # on this one zone — it can write TXT records and nothing else, so a leak
+      # costs the zone's DNS, not the account. Required: without it Caddy starts
+      # fine and then fails every renewal, which is a fault that surfaces sixty
+      # days later rather than now.
+      CF_API_TOKEN: ${CF_API_TOKEN:?CF_API_TOKEN is unset — Caddy needs it for the DNS-01 challenge}
       # The address the Manage links point at, and the ports they use. Templated
       # into the landing page at request time so .env stays the only place a
       # host port is written down.

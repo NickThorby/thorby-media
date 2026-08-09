@@ -818,12 +818,24 @@ configure_firewall() {
   # Caddy serves three names here — the landing page, Jellyfin and Jellyseerr.
   # The nine admin apps are not routed through it at all, so opening 80 and 443
   # exposes those three and nothing else (decisions.md D25, spec §5.3).
-  if [[ -n "${PUBLIC_DOMAIN:-}" ]]; then
+  if [[ "${PUBLIC_HTTP:-false}" == "true" ]]; then
+    [[ -n "${PUBLIC_DOMAIN:-}" ]] || die "PUBLIC_HTTP=true needs PUBLIC_DOMAIN set."
     run ufw allow 80/tcp
     run ufw allow 443/tcp
     ok "allowed 80/443 from any source for ${PUBLIC_DOMAIN}"
   else
-    info "PUBLIC_DOMAIN unset — no public HTTP ports opened, box is LAN + tunnel only"
+    # VPN-only (D33). Deleted, not merely skipped: this script is how the model
+    # is changed, and a rule surviving from a run when PUBLIC_HTTP was true is
+    # an opening that `ufw status` shows and nobody reads.
+    if ufw status 2>/dev/null | grep -qE '^80/tcp[[:space:]]+ALLOW IN[[:space:]]+Anywhere'; then
+      run ufw delete allow 80/tcp
+      run ufw delete allow 443/tcp
+      ok "closed public 80/443 — PUBLIC_HTTP is not true"
+    else
+      ok "no public HTTP ports open (PUBLIC_HTTP is not true)"
+    fi
+    info "Caddy still answers on the LAN and over the tunnel; only"
+    info "  ${WG_PORT:-51820}/udp is forwarded from the router."
   fi
 
   configure_docker_firewall
@@ -866,7 +878,7 @@ configure_docker_firewall() {
   # The public rules go in only when a public domain is configured. Written as a
   # separate variable so the generated file reads the same either way.
   local public_rules=""
-  if [[ -n "${PUBLIC_DOMAIN:-}" ]]; then
+  if [[ "${PUBLIC_HTTP:-false}" == "true" ]]; then
     public_rules="# The public front door. Port-scoped rather than source-scoped because after
 # DNAT the destination is a container IP that is not stable across restarts.
 # This is safe because Caddy is the only service published on the address the
@@ -1001,9 +1013,16 @@ report() {
   info "1. Put the values above into .env, plus WG_HOST, WG_USER and WG_PASS"
   info "2. DNS: A records for PUBLIC_DOMAIN, jellyfin.<domain>, seerr.<domain>"
   info "   and WG_HOST, pointing at this site's WAN address."
-  info "3. Router, two forwards to ${lan_ip:-<lan-ip>}:"
-  info "     TCP 80 and 443  — both; Let's Encrypt validates over 80"
-  info "     UDP ${WG_PORT:-51820}       — the WireGuard tunnel"
+  if [[ "${PUBLIC_HTTP:-false}" == "true" ]]; then
+    info "3. Router, two forwards to ${lan_ip:-<lan-ip>}:"
+    info "     TCP 80 and 443  — both; Let's Encrypt validates over 80"
+    info "     UDP ${WG_PORT:-51820}       — the WireGuard tunnel"
+  else
+    info "3. Router, ONE forward to ${lan_ip:-<lan-ip>}:"
+    info "     UDP ${WG_PORT:-51820}       — the WireGuard tunnel, and nothing else"
+    info "   PUBLIC_HTTP is false: certificates come from DNS-01, so 80 and 443"
+    info "   stay closed and the three names resolve to ${lan_ip:-<lan-ip>} (D33)."
+  fi
   info "   Do NOT forward ${WG_UI_PORT:-51821}. The wg-easy UI is LAN and tunnel only."
   info "4. Verify the iGPU:  vainfo | grep -Ei 'h264|hevc'"
   info "5. Start the stack:  docker compose up -d"

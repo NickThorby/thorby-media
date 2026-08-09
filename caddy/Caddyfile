@@ -1,26 +1,32 @@
 # Caddyfile — Debian target.
 #
-# Certificates come from Let's Encrypt over HTTP-01, which needs BOTH :80 and
-# :443 forwarded from the router to CADDY_BIND_ADDR. Three names are issued:
-# the bare PUBLIC_DOMAIN plus jellyfin. and seerr.
+# Certificates come from Let's Encrypt over DNS-01, against the Cloudflare zone.
+# Three names are issued: the bare PUBLIC_DOMAIN plus jellyfin. and seerr.
 #
-# Not DNS-01 with a wildcard: that needs a provider plugin, which means building
-# a custom Caddy image, and nothing else in this repo has a build step.
+# NOT HTTP-01, which is what this file used to do. The box is VPN-only
+# (decisions.md D33): the router forwards the WireGuard port and nothing else,
+# so an HTTP-01 challenge has no path in. DNS-01 needs no inbound path — Caddy
+# writes a TXT record in the zone and Let's Encrypt reads it. The cost is a
+# provider module, and therefore caddy/Dockerfile.
 #
 # Requirements on the target:
 #
-#   - A, or AAAA, records for PUBLIC_DOMAIN, jellyfin.PUBLIC_DOMAIN and
-#     seerr.PUBLIC_DOMAIN pointing at the WAN address.
-#   - Router forwarding 80 and 443 to CADDY_BIND_ADDR, the box's LAN address.
+#   - A records for PUBLIC_DOMAIN, jellyfin.PUBLIC_DOMAIN and
+#     seerr.PUBLIC_DOMAIN pointing at the box's LAN address, DNS-only (grey
+#     cloud). A private address in public DNS is useless to the internet and
+#     resolves correctly for both LAN and tunnel clients.
+#   - CF_API_TOKEN in .env, scoped Zone:DNS:Edit on this zone alone.
 #   - ACME_EMAIL set — Let's Encrypt uses it for expiry warnings.
+#   - NO port forwarding. If 80 or 443 are forwarded, the three names above
+#     resolve to a private address anyway and nothing answers from outside.
 #
-# Bring it up against the STAGING directory first. Let's Encrypt allows five
-# failed validations per hostname per hour, and the two mistakes that cost them
-# — a missing port-80 forward and a DNS record that has not propagated — are
-# both only discoverable by trying. Staging has no meaningful limit and issues
-# from an untrusted root, so the browser warning is expected and is the signal
-# that everything else worked. Set CADDY_ACME_CA in .env, restart Caddy, then
-# clear it back to production and restart again.
+# Bring it up against the STAGING directory first. Production allows five
+# failed validations per hostname per hour, and the mistake that costs them —
+# a token without Zone:DNS:Edit on the right zone — is only discoverable by
+# trying. Staging has no meaningful limit and issues from an untrusted root, so
+# the browser warning is expected and is the signal that everything else
+# worked. Set CADDY_ACME_CA in .env, restart Caddy, then clear it back to
+# production and restart again.
 #
 # The default below is the production directory, so an unset variable behaves
 # exactly as this file did before it existed.
@@ -31,6 +37,10 @@
 {
 	email {$ACME_EMAIL}
 	acme_ca {$CADDY_ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
+	# {env.…}, not {$…}: read at runtime rather than substituted when the
+	# Caddyfile is parsed, so the token never appears in `caddy adapt` output
+	# or in the autosaved JSON config under /caddydata.
+	acme_dns cloudflare {env.CF_API_TOKEN}
 }
 
 import sites.caddy
