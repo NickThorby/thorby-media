@@ -71,7 +71,17 @@ if [[ "${1:-}" == "--init-keys" ]]; then
   for var in SONARR_API_KEY RADARR_API_KEY PROWLARR_API_KEY; do
     set_key "$var" "$(openssl rand -hex 16)" && added=1
   done
-  for var in QBIT_PASS SAB_PASS BAZARR_PASS ARR_PASS; do
+  # WG_PASS is in this list even though nothing later in this script uses it.
+  # It is `${WG_PASS:?}` in docker-compose.yml, so the stack will not start
+  # without it, and it is the credential that gates minting a VPN peer — which
+  # puts the holder on the LAN. Leaving the one password with the widest blast
+  # radius as the only one a human has to invent was the wrong default.
+  #
+  # Unlike the others it is applied on wg-easy's FIRST START ONLY (INIT_*, v15),
+  # after which the value lives in wg-easy's database and editing .env does
+  # nothing. So this generates a bootstrap credential, not a rotatable one —
+  # change it in the UI afterwards (decisions.md D26).
+  for var in QBIT_PASS SAB_PASS BAZARR_PASS ARR_PASS WG_PASS; do
     set_key "$var" "$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 20)" && added=1
   done
 
