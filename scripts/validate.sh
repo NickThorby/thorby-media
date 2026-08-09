@@ -138,29 +138,33 @@ else
   ok "wg-easy binds its UI to $wg_host, not a wildcard"
 fi
 
-# Everything the landing page links to unproxied points at ADMIN_HOST:<port> —
-# the nine Manage chips, and since D31 the two hero tiles as well. Those only
-# resolve if the services are published on that address, which means BIND_ADDR
-# has to be either ADMIN_HOST or a wildcard.
+# This check used to run the other way round: everything the landing page linked
+# to unproxied pointed at ADMIN_HOST:<port>, so BIND_ADDR had to be ADMIN_HOST or
+# a wildcard, and loopback was a state you were meant to leave.
 #
-# A warning rather than a failure: README step 7 deliberately starts BIND_ADDR
-# at 127.0.0.1 so the first-run wizards cannot be reached from the LAN before
-# credentials exist. This exists to make the second half of that step hard to
-# forget, because the page gives no sign when it is skipped — the hero dots
-# probe the *public* name and report green next to two dead links (D31).
+# D34 inverted it. Every app is reached through Caddy on a name now, and Caddy
+# reaches them over the compose bridge by container name, so a published host
+# port buys nothing. Loopback is the end state, not a stage — and it is the
+# quieter one: with 127.0.0.1 there is no admin port on the LAN at all, so
+# DOCKER-USER is defending an empty room.
+#
+# Still a warning and not a failure, because a wider BIND_ADDR is a defensible
+# choice rather than a mistake: it leaves <lan-ip>:<port> working as break-glass
+# if Caddy itself is down. An SSH tunnel does the same job without the exposure,
+# which is why it is not the default.
 admin_host=$(jq -r '.services.caddy.environment.ADMIN_HOST // ""' <<<"$rendered")
 svc_ips=$(jq -r '[.services | to_entries[] | select(.key != "caddy")
                   | (.value.ports // [])[] | .host_ip // ""] | unique | .[]' <<<"$rendered")
 if [[ -z "$admin_host" ]]; then
-  bad "ADMIN_HOST is unset — every unproxied link renders as http://:<port>"
-elif grep -qxE '0\.0\.0\.0|::' <<<"$svc_ips" || grep -qxF "$admin_host" <<<"$svc_ips"; then
-  ok "services publish on ADMIN_HOST ($admin_host) — the page's links resolve"
+  bad "ADMIN_HOST is unset — caddy/admin.caddy needs it to reach the wg-easy UI"
+elif ! grep -qvxE '127\.0\.0\.1|::1' <<<"$svc_ips"; then
+  ok "services publish on loopback only — no admin port is exposed on the LAN"
 else
-  skip "BIND_ADDR ($(tr '\n' ' ' <<<"$svc_ips" | sed 's/ $//')) is not ADMIN_HOST ($admin_host)"
+  skip "BIND_ADDR ($(tr '\n' ' ' <<<"$svc_ips" | sed 's/ $//')) is wider than loopback"
   printf '      %s\n' \
-    "The Manage chips and both hero tiles point at ${admin_host}:<port>, which" \
-    "nothing is listening on. Expected while the wizards are still open; widen" \
-    "BIND_ADDR when README step 7 says to, and this turns into a pass."
+    "Every app is reachable by name through Caddy, so nothing needs a host port" \
+    "on the LAN. This is not wrong — it keeps <lan-ip>:<port> as break-glass if" \
+    "Caddy is down — but an SSH tunnel does that without the listeners."
 fi
 
 # The wg-easy chip is the same link with a different backing: host networking,
