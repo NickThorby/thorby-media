@@ -657,13 +657,31 @@ upsert_download_client() {
   existing=$(arr GET "$url" "$key" "/api/$ver/downloadclient" | jq --arg n "$name" '.[] | select(.name == $n)')
 
   if [[ -n "$existing" ]]; then
-    if [[ $(jq -r '.priority' <<<"$existing") == "$prio" ]]; then
-      skip "$app: $name exists"
-    else
-      arr PUT "$url" "$key" "/api/$ver/downloadclient/$(jq -r '.id' <<<"$existing")" \
-        "$(jq --argjson p "$prio" '.priority = $p' <<<"$existing")" >/dev/null
-      ok "$app: $name priority -> $prio"
-    fi
+    # Merge the desired fields over the stored ones and write back every time,
+    # rather than skipping because a client with this name exists.
+    #
+    # The credentials cannot be compared to decide whether a write is needed:
+    # every *arr returns the password masked, so a rotated QBIT_PASS looks
+    # exactly like an unchanged one. Skipping meant Sonarr, Radarr and Lidarr
+    # each kept the password they were created with, and the only symptom was
+    # every grab failing with "Unable to connect to qBittorrent" while this
+    # script printed three green lines. Same shape as the stale API keys in
+    # review-2026-08 S11, in the one place that fix did not reach.
+    #
+    # Fields the *arr knows about and we do not are left alone; ours win where
+    # the names collide.
+    local merged
+    merged=$(jq --argjson f "$fields" --argjson p "$prio" '
+      ((.fields // []) | map(.name)) as $have
+      | .priority = $p
+      | .fields = (
+          ((.fields // []) | map(. as $o | (($f | map(select(.name == $o.name)) | first) // $o)))
+          + ($f | map(select($have | index(.name) | not)))
+        )
+    ' <<<"$existing")
+    arr PUT "$url" "$key" "/api/$ver/downloadclient/$(jq -r '.id' <<<"$existing")" \
+      "$merged" >/dev/null
+    ok "$app: $name reconciled (credentials, priority $prio)"
     return
   fi
 
