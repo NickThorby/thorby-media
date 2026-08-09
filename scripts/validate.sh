@@ -138,6 +138,38 @@ else
   ok "wg-easy binds its UI to $wg_host, not a wildcard"
 fi
 
+# Everything the landing page links to unproxied points at ADMIN_HOST:<port> —
+# the nine Manage chips, and since D31 the two hero tiles as well. Those only
+# resolve if the services are published on that address, which means BIND_ADDR
+# has to be either ADMIN_HOST or a wildcard.
+#
+# A warning rather than a failure: README step 7 deliberately starts BIND_ADDR
+# at 127.0.0.1 so the first-run wizards cannot be reached from the LAN before
+# credentials exist. This exists to make the second half of that step hard to
+# forget, because the page gives no sign when it is skipped — the hero dots
+# probe the *public* name and report green next to two dead links (D31).
+admin_host=$(jq -r '.services.caddy.environment.ADMIN_HOST // ""' <<<"$rendered")
+svc_ips=$(jq -r '[.services | to_entries[] | select(.key != "caddy")
+                  | (.value.ports // [])[] | .host_ip // ""] | unique | .[]' <<<"$rendered")
+if [[ -z "$admin_host" ]]; then
+  bad "ADMIN_HOST is unset — every unproxied link renders as http://:<port>"
+elif grep -qxE '0\.0\.0\.0|::' <<<"$svc_ips" || grep -qxF "$admin_host" <<<"$svc_ips"; then
+  ok "services publish on ADMIN_HOST ($admin_host) — the page's links resolve"
+else
+  skip "BIND_ADDR ($(tr '\n' ' ' <<<"$svc_ips" | sed 's/ $//')) is not ADMIN_HOST ($admin_host)"
+  printf '      %s\n' \
+    "The Manage chips and both hero tiles point at ${admin_host}:<port>, which" \
+    "nothing is listening on. Expected while the wizards are still open; widen" \
+    "BIND_ADDR when README step 7 says to, and this turns into a pass."
+fi
+
+# The wg-easy chip is the same link with a different backing: host networking,
+# so WG_UI_BIND is what has to match rather than BIND_ADDR.
+if [[ -n "$admin_host" && -n "$wg_host" && "$wg_host" != "$admin_host" ]]; then
+  skip "wg-easy binds $wg_host but its chip points at $admin_host"
+  printf '      %s\n' "WG_UI_BIND and ADMIN_HOST are normally the same LAN address."
+fi
+
 # wg-easy v15 refuses to start if either of these is present — deliberately, so
 # a v14 configuration cannot be silently carried across a major upgrade. Every
 # v14-era tutorial tells you to set one, so assert they are absent rather than

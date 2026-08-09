@@ -214,9 +214,17 @@ and 2, which no runtime error would catch), confirms Gluetun is still commented
 out, checks the exposure invariants (every published port names an interface,
 Caddy is not on a wildcard, the *arr auth env vars are present, `.env` is 0600),
 validates the Caddyfile, checks the landing page (invariant 7 — no external
-`src`/`href`, no CSS `url()` that is not a `data:` URI, and the tiles' `data-sub`
-set still equals the `sites.caddy` route set), and shellchecks every script. Run
-it before every commit.
+`src`/`href`, no CSS `url()` that is not a `data:` URI, no hardcoded host in an
+`href` or a `data-lan`, every `{{env}}` the page reads is set on the caddy
+service, and the tiles' `data-sub` set still equals the `sites.caddy` route
+set), and shellchecks every script. Run it before every commit.
+
+Not everything it prints is a pass or a fail. A yellow `–` is a warning it
+cannot resolve on its own — a `WG_SUBNET` outside the ranges `private_only`
+matches, or a `BIND_ADDR` that is neither `ADMIN_HOST` nor a wildcard, which
+means every unproxied link on the landing page points at an address nothing is
+listening on. That second one is expected while `BIND_ADDR` is still at
+loopback and is a real fault afterwards, so it warns rather than failing.
 
 It needs GNU `stat`, bash 5 and a Docker daemon, so it runs on the box rather
 than on a workstation. `shellcheck` and `caddy` are not installed as packages;

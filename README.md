@@ -235,6 +235,13 @@ two, it is the only thing that would ever tell you.
 Only then set `BIND_ADDR` to `0.0.0.0` (or the LAN IP) and
 `docker compose up -d`.
 
+**Do not skip the second half of that.** While `BIND_ADDR` is at loopback,
+every unproxied link on the landing page — the nine Manage chips and, since
+D31, the two hero tiles — points at `ADMIN_HOST:<port>` with nothing listening
+there. The page gives no sign of it: the hero dots probe the *public* name and
+report green next to two dead buttons. `validate.sh` warns about the mismatch
+with a yellow `–` until the two addresses agree.
+
 Re-run `sudo ./setup.sh --skip-packages` after this, even if you set
 `LAN_SUBNET` before the first run. `wg0` does not exist until wg-easy has
 started once, so the first pass could not add `ufw allow in on wg0` and said so
