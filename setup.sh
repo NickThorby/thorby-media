@@ -811,8 +811,26 @@ configure_firewall() {
   if [[ -n "${WG_PORT:-}" ]]; then
     run ufw allow "${WG_PORT}/udp"
     ok "allowed ${WG_PORT}/udp for WireGuard"
-    info "WG_UI_PORT (${WG_UI_PORT:-51821}) is deliberately NOT opened here — the"
-    info "  admin UI is reachable from the LAN and the tunnel only."
+    # WG_UI_PORT is still not opened to the LAN or the internet. It is opened to
+    # Docker's address pool, and only because D34 proxies the wg-easy UI through
+    # Caddy: wg-easy runs with host networking, so it is the one upstream Caddy
+    # cannot reach by container name. Caddy's packet leaves the bridge with a
+    # 172.x source, arrives at the host's INPUT chain, and default-deny drops it
+    # -- the LAN allow does not cover it. The symptom is a 502 on one name out
+    # of twelve.
+    #
+    # The honest cost: spec §5.3 used to say ufw genuinely filters this port,
+    # full stop. It now filters it for everything except containers on this box.
+    # A compromised container can reach the wg-easy login page, which it could
+    # not before. It still has to get past the login, which audit-auth.sh
+    # asserts is enforced, and a container that can talk to the Docker socket
+    # or the *arr APIs is already past caring about this one.
+    if [[ -n "${WG_UI_PORT:-}" ]]; then
+      run ufw allow from 172.16.0.0/12 to any port "${WG_UI_PORT}" proto tcp
+      ok "allowed the Docker pool to reach the wg-easy UI on ${WG_UI_PORT} (Caddy proxies it)"
+    fi
+    info "WG_UI_PORT (${WG_UI_PORT:-51821}) is NOT opened to the LAN or the"
+    info "  internet; reach it at wg.\${PUBLIC_DOMAIN} or on the LAN address."
   else
     warn "WG_PORT unset in .env — no WireGuard port opened, so no peer can connect"
   fi

@@ -268,13 +268,17 @@ provision_sabnzbd() {
   # Sonarr calling http://sabnzbd:8080 is refused. Same class of problem as
   # qBittorrent's host-header check.
   #
-  # No proxy hostname here any more: SABnzbd is not routed through Caddy at all
-  # (D25). It is reached at ADMIN_HOST:SAB_PORT, and SABnzbd accepts a bare IP
-  # in the Host header without it being listed — verified, a direct hit on the
-  # LAN address returns the login redirect rather than a 403.
+  # The proxy hostname is back, because D34 routes SABnzbd through Caddy again.
+  # SABnzbd rejects any Host it has not been told about with a bare 403 and no
+  # explanation, which reads like an authentication failure and sends you
+  # looking in the wrong place — measured on the target, even `Host: sabnzbd`
+  # 403s until it is listed. ADMIN_HOST and localhost stay so the direct
+  # <lan-ip>:<port> path and the loopback probes in audit-auth.sh keep working.
+  local sab_hosts="sabnzbd,localhost,${ADMIN_HOST:-}"
+  [[ -n "${PUBLIC_DOMAIN:-}" ]] && sab_hosts="${sab_hosts},sab.${PUBLIC_DOMAIN}"
   sab -d mode=set_config -d section=misc -d keyword=host_whitelist \
-      --data-urlencode "value=sabnzbd,localhost,${ADMIN_HOST:-}" >/dev/null
-  ok "host whitelist -> sabnzbd, localhost, ${ADMIN_HOST:-<unset>}"
+      --data-urlencode "value=${sab_hosts}" >/dev/null
+  ok "host whitelist -> ${sab_hosts}"
 
   # Incomplete and complete both live under /data/usenet, a sibling of
   # torrents/ and media/, so finished downloads hardlink into the library
