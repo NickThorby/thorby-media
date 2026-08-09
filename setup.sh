@@ -284,6 +284,23 @@ configure_fail2ban_web() {
 
   local caddy_log="${CONFIG_ROOT:-/opt/mediaserver}/caddy/logs/access.log"
 
+  # The jail bans on any 401 or 403, and Jellyfin's web client and Jellyseerr
+  # both return 401 routinely — an expired session, a token refresh, a client
+  # reconnecting on a flaky mobile connection. Ten of those inside ten minutes
+  # is an ordinary evening, not an attack, so without this the jail's first
+  # victim is the household. Exempt the two networks that are already trusted
+  # everywhere else in this design; the internet is what it is here to stop.
+  #
+  # Written as an if rather than `[[ ... ]] && ...`, which returns 1 when the
+  # test fails and would abort the script under `set -e` (review-2026-08 A1).
+  local ignore="127.0.0.1/8 ::1"
+  if [[ -n "${LAN_SUBNET:-}" ]]; then
+    ignore="${ignore} ${LAN_SUBNET}"
+  else
+    warn "LAN_SUBNET unset — the caddy-auth jail can ban LAN clients. Set it and re-run."
+  fi
+  ignore="${ignore} ${WG_SUBNET:-10.8.0.0/24}"
+
   if $DRY_RUN; then
     printf '  \033[36m[dry-run]\033[0m write fail2ban caddy-auth and jellyfin jails\n'
     return 0
@@ -302,16 +319,22 @@ EOF
 
   write_file /etc/fail2ban/jail.d/caddy-auth.conf 0644 <<EOF
 # Managed by setup.sh — brute-force protection for the public routes.
+#
+# maxretry is 20, not the 10 the sshd jail uses. This watches a login form on a
+# page the household is meant to use, where a wrong password is a typo; sshd
+# guards a shell where it is not. Twenty still stops credential stuffing dead.
 [caddy-auth]
 enabled  = true
 filter   = caddy-auth
 logpath  = ${caddy_log}
 port     = http,https
-maxretry = 10
+ignoreip = ${ignore}
+maxretry = 20
 findtime = 10m
 bantime  = 1h
 EOF
   ok "fail2ban caddy-auth jail written (watches ${caddy_log})"
+  info "caddy-auth ignoreip: ${ignore}"
 
   # Jellyfin's own log names the user, which Caddy's cannot. It is only useful
   # once Jellyfin's KnownProxies includes the compose bridge — until then every
@@ -337,6 +360,7 @@ enabled  = false
 filter   = jellyfin
 logpath  = ${CONFIG_ROOT:-/opt/mediaserver}/jellyfin/log/*.log
 port     = http,https
+ignoreip = ${ignore}
 maxretry = 10
 findtime = 10m
 bantime  = 1h
@@ -665,15 +689,21 @@ net.ipv6.conf.all.disable_ipv6=0
 net.ipv6.conf.all.forwarding=1
 net.ipv6.conf.default.forwarding=1
 EOF
-    # Tolerant rather than fatal: /proc/sys is read-only in an unprivileged
-    # container, and `set -e` on a bare `sysctl --system` would abort the whole
-    # script there — the same failure shape as the DRY_RUN bug in preflight().
-    if run sysctl --system >/dev/null 2>&1; then
-      ok "forwarding sysctls applied"
-    else
-      warn "sysctl --system failed — the file is written but not yet active."
-      warn "  Apply with: sysctl --system"
-    fi
+  fi
+
+  # Applied outside the guard above, deliberately. When this warns, the file is
+  # on disk but the settings are not live — and if the apply were inside the
+  # `else` branch, the re-run the warning asks for would take the `already
+  # present` path and never retry. Writing and applying are separate concerns.
+  #
+  # Tolerant rather than fatal: /proc/sys is read-only in an unprivileged
+  # container, and `set -e` on a bare `sysctl --system` would abort the whole
+  # script there — the same failure shape as the DRY_RUN bug in preflight().
+  if run sysctl --system >/dev/null 2>&1; then
+    ok "forwarding sysctls applied"
+  else
+    warn "sysctl --system failed — the file is written but not yet active."
+    warn "  Apply with: sysctl --system"
   fi
 }
 
@@ -777,13 +807,9 @@ configure_docker_firewall() {
   # and qBittorrent are on the internet. See decisions.md D19.
   local rules=/etc/ufw/after.rules
   local marker="# BEGIN MEDIASERVER DOCKER-USER"
+  local end_marker="# END MEDIASERVER DOCKER-USER"
 
   [[ -f "$rules" ]] || { warn "$rules not found — is ufw installed?"; return 0; }
-
-  if grep -qF "$marker" "$rules"; then
-    ok "DOCKER-USER rules already present in $rules"
-    return 0
-  fi
 
   if [[ -z "${LAN_SUBNET:-}" ]]; then
     warn "LAN_SUBNET unset — skipping DOCKER-USER rules."
@@ -791,15 +817,6 @@ configure_docker_firewall() {
     warn "  and break Infuse on the Apple TV. Set LAN_SUBNET and re-run."
     return 0
   fi
-
-  if $DRY_RUN; then
-    printf '  \033[36m[dry-run]\033[0m append DOCKER-USER block to %s (LAN %s)\n' \
-      "$rules" "$LAN_SUBNET"
-    return 0
-  fi
-
-  cp "$rules" "${rules}.bak"
-  ok "backed up $rules to ${rules}.bak"
 
   # The public rules go in only when a public domain is configured. Written as a
   # separate variable so the generated file reads the same either way.
@@ -814,8 +831,8 @@ configure_docker_firewall() {
 -A DOCKER-USER -p tcp --dport 443 -j RETURN"
   fi
 
-  cat >> "$rules" <<EOF
-
+  local block
+  block=$(cat <<EOF
 ${marker}
 # Managed by setup.sh. Docker-published ports bypass UFW's INPUT chain, so
 # these rules apply the same policy to forwarded container traffic.
@@ -823,6 +840,22 @@ ${marker}
 *filter
 :DOCKER-USER - [0:0]
 -A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+# Container-originated traffic. This chain is jumped from the TOP of FORWARD, so
+# it sees egress and container-to-container as well as inbound — the DROP at the
+# bottom is not scoped to arriving packets and never was. Without these two it
+# kills every outbound connection a container makes, starting with Docker's
+# embedded DNS resolver, whose upstream queries leave the container's own
+# namespace and are therefore forwarded traffic with a bridge source address.
+# Nothing then resolves anything: no indexers, no Usenet, and no ACME, so Caddy
+# never obtains a certificate (decisions.md D28).
+#
+# Scoped by interface AND source on purpose. The interface match alone would
+# trust a host bridge named br0, which this box would have if it ever ran VMs;
+# the source match alone would trust a WAN packet forging a bridge address.
+# 172.16.0.0/12 is Docker's default address pool — change
+# default-address-pools in /etc/docker/daemon.json and these must follow.
+-A DOCKER-USER -i br+ -s 172.16.0.0/12 -j RETURN
+-A DOCKER-USER -i docker0 -s 172.16.0.0/12 -j RETURN
 # wg0 is a host interface because wg-easy runs with host networking, so peer
 # traffic aimed at a published container port is matchable here by interface.
 # No rule is needed for the tunnel port itself: that is a host listener and
@@ -837,12 +870,66 @@ ${public_rules}
 # correctly configured.
 -A DOCKER-USER -j DROP
 COMMIT
-# END MEDIASERVER DOCKER-USER
+${end_marker}
 EOF
+)
+
+  local present=false current=""
+  if grep -qF "$marker" "$rules"; then
+    present=true
+    current=$(awk -v b="$marker" -v e="$end_marker" '
+      $0 == b { inblock = 1 }
+      inblock { print }
+      $0 == e { inblock = 0 }
+    ' "$rules")
+    if [[ "$current" == "$block" ]]; then
+      ok "DOCKER-USER rules already present and current in $rules"
+      return 0
+    fi
+  fi
+
+  # Rewritten rather than skipped when it differs. LAN_SUBNET and PUBLIC_DOMAIN
+  # are both routinely filled in after the first run — and report() ends by
+  # telling you to re-run once wg0 exists — so a write-once guard here would
+  # leave the stalest possible rules in place while every message said the
+  # script had succeeded.
+  if $DRY_RUN; then
+    local action=append
+    $present && action=rewrite
+    printf '  \033[36m[dry-run]\033[0m %s DOCKER-USER block in %s (LAN %s):\n' \
+      "$action" "$rules" "$LAN_SUBNET"
+    # Printed in full, in write_file's format, rather than as the one-line
+    # summary this used to be. These are the highest-consequence lines the
+    # script writes and a dry run is where they get read, so "a block was
+    # appended" hid the only thing worth checking.
+    while IFS= read -r line; do printf '      | %s\n' "$line"; done <<<"$block"
+    return 0
+  fi
+
+  cp "$rules" "${rules}.bak"
+  ok "backed up $rules to ${rules}.bak"
+
+  local tmp
+  tmp=$(mktemp)
+  awk -v b="$marker" -v e="$end_marker" '
+    $0 == b { inblock = 1; next }
+    inblock { if ($0 == e) inblock = 0; next }
+    { print }
+  ' "$rules" > "$tmp"
+
+  # Written back through the existing file rather than moved over it, so the
+  # mode and ownership ufw expects on after.rules survive. The command
+  # substitution eats trailing newlines, which normalises the blank line the
+  # strip above leaves behind — otherwise repeated rewrites accumulate them.
+  printf '%s\n\n%s\n' "$(< "$tmp")" "$block" > "$rules"
+  rm -f "$tmp"
+
+  local verb="appended"
+  $present && verb="rewritten"
   if [[ -n "${PUBLIC_DOMAIN:-}" ]]; then
-    ok "DOCKER-USER rules appended (wg0 + ${LAN_SUBNET} + public 80/443 in)"
+    ok "DOCKER-USER rules ${verb} (wg0 + ${LAN_SUBNET} + public 80/443 in)"
   else
-    ok "DOCKER-USER rules appended (wg0 + ${LAN_SUBNET} in, rest dropped)"
+    ok "DOCKER-USER rules ${verb} (wg0 + ${LAN_SUBNET} in, rest dropped)"
   fi
   info "verify after reload:  iptables -L DOCKER-USER -n -v"
 }

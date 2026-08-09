@@ -45,16 +45,42 @@ The target machine, per spec §1–§2:
 - Docker from Docker's official repository — not Debian's `docker.io`
 - No VPN client to install: remote administration is the `wg-easy` container in
   this stack, which comes up with everything else
-- A domain, with A records for it plus `jellyfin.` and `seerr.` pointing at the
-  WAN address
-- Router forwarding to the box's LAN address:
-  - TCP **80 and 443** — both; Let's Encrypt validates over 80 and will not
-    issue a certificate without it
-  - UDP **`WG_PORT`** (51820) — the WireGuard tunnel. Never forward
-    `WG_UI_PORT`; the wg-easy admin UI is LAN and tunnel only
-- A DNS A record for `WG_HOST` as well, pointing at the WAN address. A name
-  rather than a bare IP, so a changed WAN address is one DNS edit instead of
-  reissuing every peer config
+### DNS
+
+Four A records, all pointing at the WAN address. Three are the names Caddy
+issues certificates for; the fourth is what WireGuard peers dial.
+
+| Record | Purpose | Set in |
+|---|---|---|
+| `media.thorby.tech` | landing page | `PUBLIC_DOMAIN` |
+| `jellyfin.media.thorby.tech` | Jellyfin | derived from `PUBLIC_DOMAIN` |
+| `seerr.media.thorby.tech` | Jellyseerr | derived from `PUBLIC_DOMAIN` |
+| `vpn.thorby.tech` | the tunnel endpoint | `WG_HOST` |
+
+`WG_HOST` is a name rather than a bare IP so a changed WAN address is one DNS
+edit instead of reissuing every peer config. No record exists for any admin app,
+and that absence is one of the three mechanisms keeping them off the internet
+(spec §5.3) — do not add one.
+
+**Check NAT hairpin.** Inside the house those names resolve to the WAN address,
+so reaching them requires the router to loop a LAN client back through its own
+public IP. Plenty of consumer routers do not, which produces the most confusing
+possible failure: the domain works from a phone on cellular and times out from
+the sofa. Test it before the household does. If it fails, add a **local DNS
+override** on the router mapping the three `media.thorby.tech` names to
+`CADDY_BIND_ADDR`. The Let's Encrypt certificate still validates — the name is
+what it is issued for, not the address behind it.
+
+### Router
+
+Forward to the box's LAN address, and nothing else:
+
+- TCP **80 and 443** — both; Let's Encrypt validates over 80 and will not
+  issue a certificate without it
+- UDP **`WG_PORT`** (51820) — the WireGuard tunnel
+
+Never forward `WG_UI_PORT`; the wg-easy admin UI is LAN and tunnel only. If the
+router's own admin interface is on 80 or 443, move it first.
 
 Confirm the iGPU is alive before going further — `vainfo` must list H.264 and
 HEVC entrypoints. If `/dev/dri` does not exist, it is disabled in BIOS.
@@ -69,8 +95,19 @@ Clone the repo onto the target, then:
 cp .env.example .env
 ```
 
-Fill it in as you go — `setup.sh` prints most of the host-specific values.
-There is one compose file, so nothing here needs flags or an override.
+Most of it gets filled in as you go — `setup.sh` prints the host-specific
+values. There is one compose file, so nothing here needs flags or an override.
+
+**Two values have to go in before `setup.sh` runs at all:**
+
+| Variable | Why it cannot wait |
+|---|---|
+| `LAN_SUBNET` | With it blank, `setup.sh` **skips the entire `DOCKER-USER` block** — the rules that actually keep the service ports off the internet — and falls back to allowing SSH from any source |
+| `PUBLIC_DOMAIN` | Decides whether the firewall opens 80/443 and whether the fail2ban web jails are written |
+
+Both are re-read on every run and the firewall block is rewritten when they
+change, so correcting them later and re-running does work. Getting them right
+the first time avoids a window where the box is up and the rules are not.
 
 **1. Dry run first.** `setup.sh` rewrites `/etc/fstab`, creates a system user,
 enables a firewall and can format a disk, so start by looking at exactly what
@@ -126,6 +163,16 @@ actually keep the service ports off the internet, because plain UFW does not
 filter Docker-published ports. Re-run `sudo ./setup.sh --skip-packages` after
 editing to apply the firewall change.
 
+**Prove the certificates against staging first.** Uncomment `CADDY_ACME_CA` in
+`.env` so the first issuance goes to Let's Encrypt's staging directory. Two
+things are likely to be wrong on a first attempt — port 80 not actually
+forwarded, and a DNS record that has not propagated — and neither can be found
+except by trying. Production allows five failed validations per hostname per
+hour; staging does not care. Staging issues from an untrusted root, so a browser
+certificate warning is the expected result and means everything else worked.
+Comment the variable out again and `docker compose restart caddy` to switch to
+real certificates.
+
 **4. Verify the iGPU** before starting anything:
 
 ```bash
@@ -179,9 +226,15 @@ Jellyseerr — see steps 8 and 9 of the configuration sequence below. Re-run
 what it actually enforces, rather than trusting that a wizard was completed.
 
 Only then set `BIND_ADDR` to `0.0.0.0` (or the LAN IP) and
-`docker compose up -d`. Make sure `LAN_SUBNET` is set in `.env` and re-run
-`sudo ./setup.sh` — the firewall rules that keep those ports off the internet
-depend on it.
+`docker compose up -d`.
+
+Re-run `sudo ./setup.sh --skip-packages` after this, even if you set
+`LAN_SUBNET` before the first run. `wg0` does not exist until wg-easy has
+started once, so the first pass could not add `ufw allow in on wg0` and said so
+— until it does, the tunnel reaches container ports but not the box's own
+listeners, which means no SSH and no wg-easy UI over WireGuard. The firewall
+block is re-rendered on every run and rewritten if anything changed, so this is
+safe to repeat.
 
 The hardlink test is not optional. It writes a file as qBittorrent and links it
 as Sonarr, then compares device, inode and link count — the same thing step 6 of
@@ -284,6 +337,17 @@ Create three libraries: `/data/media/movies`, `/data/media/tv`, and
 With Infuse as the primary client this rarely fires — Infuse direct-plays almost
 everything. It matters for browser and remote playback.
 
+Then Dashboard → Networking, **Known proxies**: add the compose bridge subnet
+(`docker network inspect mediaserver_default -f '{{(index .IPAM.Config 0).Subnet}}'`).
+Jellyfin is reached from the internet only through Caddy, and until it is told
+that Caddy is a proxy it records Caddy's container address as the client for
+every remote session. Three things depend on getting this right: the session
+list in the dashboard means something, Jellyfin's own failed-login throttling
+counts individual clients rather than lumping the household into one, and the
+fail2ban `jellyfin` jail becomes safe to enable — `setup.sh` ships it
+**disabled** precisely because a jail fed proxy addresses bans the proxy and
+takes everyone offline at once.
+
 ### 9. Jellyseerr — `:5055`
 
 The front door for everyone who is not you. **Do step 8 first** — the wizard asks
@@ -324,11 +388,22 @@ it is live on save — there is no build step and no `docker compose restart`.
 
 ### 9b. Admin access from outside
 
-Open the wg-easy UI at `http://<lan-ip>:51821`, add a peer, scan the QR code
-with the WireGuard app. Then browse to `http://<lan-ip>:8989` for Sonarr and so
-on — **the same address you would use at home**. Nothing proxies them, so there
-is no hostname to remember and no certificate involved; the transport is
-encrypted by WireGuard.
+Open the wg-easy UI at `http://<lan-ip>:<WG_UI_PORT>` (51821 by default), add a
+peer, scan the QR code with the WireGuard app. Then browse to
+`http://<lan-ip>:8989` for Sonarr and so on — **the same address you would use at
+home**. Nothing proxies them, so there is no hostname to remember and no
+certificate involved; the transport is encrypted by WireGuard.
+
+Two things about that UI are worth knowing before you rely on it. It speaks
+plain HTTP (`INSECURE=true` — v15 otherwise serves a self-signed certificate,
+and a warning on every visit teaches the wrong reflex; the tunnel or the LAN is
+the encryption). And `WG_USER`/`WG_PASS` apply on the **first container start
+only** — after that the credentials live in wg-easy's own database, so change
+the password in the UI and treat `.env` as the bootstrap, not the record. If
+`${CONFIG_ROOT}/wg-easy` is ever lost, the container comes back with an **open
+setup wizard** and the next visitor becomes the VPN administrator;
+`./scripts/audit-auth.sh` checks for exactly that and is the compensating
+control (decisions.md D26).
 
 Peers get a split tunnel: only the LAN and the WireGuard subnet route through
 it, so ordinary browsing is unaffected and the tunnel is cheap enough to leave
@@ -430,6 +505,11 @@ alerting path that has never been tested is not an alerting path.
 - **UFW alone does not protect the service ports.** Docker publishes bypass its
   INPUT chain entirely. The `DOCKER-USER` rules `setup.sh` installs are what
   actually enforce this, and they need `LAN_SUBNET` set in `.env`
+- That chain filters **outbound** container traffic as well as inbound, because
+  Docker jumps to it from the top of `FORWARD`. If you ever hand-edit it, keep
+  the `br+`/`docker0` RETURN rules: without them containers cannot resolve DNS
+  and the whole stack stops working while the firewall listing looks correct
+  (decisions.md D28)
 
 Back up before updating — `docker compose pull` on `:latest` tags can land a
 breaking major version:
@@ -443,6 +523,13 @@ A daily backup timer is installed by `setup.sh`; `./scripts/backup-config.sh
 --list` shows what is there. Restore is tested in
 [`docs/verification.md`](docs/verification.md) item 10 — an untested backup is
 not a backup.
+
+**Those backups live on the media disk**, which is the same physical drive as
+the library and currently the only one in the box. It protects against a bad
+upgrade or a botched config change, not against the drive failing — and the
+archive is the only copy of the wg-easy peer keys and every *arr database. Copy
+one off the box periodically until the second drive lands (§3.6, decisions.md
+D22, D27).
 
 ---
 
@@ -468,11 +555,19 @@ is not set to Anime.
 
 **The landing page shows no status dots, or a grey one.** The dots are probed by
 the browser, so they report what *your device* can reach, not what the box
-thinks. All of them missing means nothing was reachable — usually the client has
-dropped off the VPN. A single grey one means that hostname is not answering:
-check it is still routed in `caddy/sites.caddy`. Note the dots cannot see a
-stopped container, because Caddy answers 502 and the probe cannot read the status
-(decisions.md D24) — they mean "answering", not "healthy".
+thinks. On the two Watch/Request tiles: all of them missing means nothing was
+reachable — usually the client has dropped off the VPN; a single grey one means
+that hostname is not answering, so check it is still routed in
+`caddy/sites.caddy`. The dots cannot see a stopped container, because Caddy
+answers 502 and the probe cannot read the status (decisions.md D24) — they mean
+"answering", not "healthy".
+
+**The Manage chips never show dots, and that is expected.** The page is served
+over HTTPS while those links are `http://<lan-ip>:<port>`, and a browser blocks
+a fetch from an HTTPS page to an HTTP address as mixed content. There is no way
+to instrument them without either putting the admin apps behind the proxy — the
+one thing this design refuses — or issuing certificates for private addresses.
+The links themselves work; only the indicator is absent.
 
 ---
 

@@ -356,6 +356,14 @@ undo by accident:
 3. **No packet.** The `DOCKER-USER` chain returns only ports 80 and 443 from
    off-box; a WAN packet aimed at 8989 is DNAT'd to Sonarr and then dropped.
 
+**The seventh admin surface is the wg-easy UI, and it is excluded differently.**
+The six above are Docker publishes, which is why they need `DOCKER-USER` — UFW
+never sees them. wg-easy runs with host networking, so `WG_UI_PORT` is an
+ordinary host listener that `ufw default deny incoming` genuinely filters, and
+the router never forwards it. Same outcome, different mechanism; `validate.sh`'s
+route check does not cover it because there is no route to check, so the control
+that matters there is `audit-auth.sh` (decisions.md D26).
+
 Additionally:
 
 - Change qBittorrent's default credentials on first login

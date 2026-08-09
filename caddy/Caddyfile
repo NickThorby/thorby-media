@@ -14,11 +14,23 @@
 #   - Router forwarding 80 and 443 to CADDY_BIND_ADDR, the box's LAN address.
 #   - ACME_EMAIL set — Let's Encrypt uses it for expiry warnings.
 #
+# Bring it up against the STAGING directory first. Let's Encrypt allows five
+# failed validations per hostname per hour, and the two mistakes that cost them
+# — a missing port-80 forward and a DNS record that has not propagated — are
+# both only discoverable by trying. Staging has no meaningful limit and issues
+# from an untrusted root, so the browser warning is expected and is the signal
+# that everything else worked. Set CADDY_ACME_CA in .env, restart Caddy, then
+# clear it back to production and restart again.
+#
+# The default below is the production directory, so an unset variable behaves
+# exactly as this file did before it existed.
+#
 # This file holds only certificate issuance. Everything else — the routes and
 # the two snippets they import — is in sites.caddy.
 
 {
 	email {$ACME_EMAIL}
+	acme_ca {$CADDY_ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
 }
 
 import sites.caddy

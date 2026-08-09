@@ -133,9 +133,14 @@ Anything other than a proxied 200 is correct — Caddy has no site for that name
 mobile data, with WireGuard OFF — will do:
 
 ```bash
-nmap -Pn -p 80,443,8096,8080,8989,7878,5055,6767,9696,51821 <wan-ip>
+nmap -Pn -p 80,443,5055,6767,6881,8080,8085,8096,8989,7878,9696,51821 <wan-ip>
 nmap -Pn -sU -p 51820 <wan-ip>
 ```
+
+Every published port is in that list on purpose, `8085` included — SABnzbd runs
+post-processing scripts, so an open SABnzbd is the same class of risk as an open
+qBittorrent (spec §5.3), and it is the one most easily left out of a scan
+because it is the only host port that does not match its container port.
 
 Only 80 and 443 open on TCP; everything else filtered or closed, `51821`
 included. The UDP scan is expected to report `open|filtered` — WireGuard does
@@ -250,25 +255,41 @@ never `INPUT`. Confirm the `DOCKER-USER` rules are loaded (decisions.md D19):
 sudo iptables -L DOCKER-USER -n -v
 ```
 
-Expect RETURN rules for established traffic, `lo`, `wg0`, the LAN subnet
-and **tcp dports 80 and 443**, then a final DROP. If the chain is empty,
-`setup.sh` skipped the step — almost certainly because `LAN_SUBNET` is unset in
-`.env`.
+Expect RETURN rules for established traffic, `br+` and `docker0` from
+`172.16.0.0/12`, `lo`, `wg0`, the LAN subnet and **tcp dports 80 and 443**, then
+a final DROP. If the chain is empty, `setup.sh` skipped the step — almost
+certainly because `LAN_SUBNET` is unset in `.env`.
 
 The two port rules are what make the router forward work at all. Without them
 the packet is DNAT'd, traverses `FORWARD`, and dies at the DROP while the router
 configuration looks perfectly correct — so the symptom is "my domain times out"
 with nothing in Caddy's log.
 
-Then prove it from off-box, on a host that is neither on the LAN nor the tunnel
-(a phone on mobile data is enough):
+**Containers can still reach the internet.** `DOCKER-USER` is jumped from the top
+of `FORWARD`, so it sees egress as well as inbound — the two `br+`/`docker0`
+rules are what stop the final DROP killing every outbound connection a container
+makes. Docker's embedded DNS resolver forwards its upstream queries from inside
+the container's own namespace, so DNS is the first thing to go and everything
+else follows it (decisions.md D28):
 
 ```bash
-nmap -Pn -p 80,443,8096,8080,8989,7878,5055 <public-ip>
+docker compose exec sonarr getent hosts github.com
+docker compose exec caddy wget -q -O /dev/null https://acme-v02.api.letsencrypt.org/directory && echo ACME reachable
 ```
 
-All filtered or closed. Item 5 tests the same thing but was written assuming UFW
-was what enforced it.
+Both must succeed. If they do not, no indexer works, no Usenet article
+downloads, and Caddy never obtains a certificate — while `iptables -L` looks
+entirely reasonable and item 5's external scan passes.
+
+Then prove the inbound side from off-box, on a host that is neither on the LAN
+nor the tunnel (a phone on mobile data is enough):
+
+```bash
+nmap -Pn -p 80,443,5055,6767,6881,8080,8085,8096,8989,7878,9696,51821 <public-ip>
+```
+
+All filtered or closed except 80 and 443. Item 5 tests the same thing but was
+written assuming UFW was what enforced it.
 
 - [ ] Passes
 
@@ -335,6 +356,31 @@ rm -rf /tmp/restore-test
 
 `integrity_check` must return `ok`. Anything else means the database was copied
 mid-write and the backup is worthless.
+
+- [ ] Passes
+
+## 11. The landing page reaches the household, and the house reaches the domain
+
+Hairpin NAT is the failure that only shows up indoors. From a LAN client that is
+**not** the box and **not** on the tunnel:
+
+```bash
+curl -sI https://media.thorby.tech          | head -1
+curl -sI https://jellyfin.media.thorby.tech | head -1
+curl -sI https://seerr.media.thorby.tech    | head -1
+```
+
+All three answer, with a valid certificate. A timeout here while the same names
+work from mobile data means the router will not loop a LAN client back through
+its own WAN address. Fix it with a local DNS override on the router pointing
+those three names at `CADDY_BIND_ADDR` — the certificate still validates, since
+it is issued for the name and not the address.
+
+```bash
+dig +short media.thorby.tech
+```
+
+Run from a LAN client, this shows which answer that client is getting.
 
 - [ ] Passes
 

@@ -273,9 +273,11 @@ One file therefore works at both the real domain and a dev hostname, port
 included. A server-side template on the domain variable would lose the dev port,
 since that variable carries no port.
 
-Two later amendments: the variable is now `{$PUBLIC_DOMAIN}` (D25), and this
+Three later amendments: the variable is now `{$PUBLIC_DOMAIN}` (D25); this
 derivation applies to the **two public tiles only** — the admin chips point at
-`<lan-ip>:<port>` and are rendered server-side, because nothing proxies them.
+`<lan-ip>:<port>` and are rendered server-side, because nothing proxies them;
+and there are **seven** admin tools behind the disclosure, not six, since D26
+added wg-easy to the set.
 
 All of the above still holds. Two of its literal claims no longer do: there is
 now a third file, `app.js`, and the page makes same-origin requests of its own
@@ -311,10 +313,11 @@ returns 200 with no login. Note that the setting is applied at runtime and is
 
 ### D19. UFW does not filter the container ports, so setup.sh writes DOCKER-USER rules
 
-**Amended by D26.** The interface rule is now `-i wg0`. No rule is needed for
-the WireGuard port itself: wg-easy uses host networking, so the tunnel is a host
-listener that INPUT genuinely filters and it never reaches this chain — the one
-place in this design where a port is *not* subject to the caveat below.
+**Amended by D26 and D28.** The interface rule is now `-i wg0`, and the chain
+carries two further RETURNs for container-originated traffic. No rule is needed
+for the WireGuard port itself: wg-easy uses host networking, so the tunnel is a
+host listener that INPUT genuinely filters and it never reaches this chain — the
+one place in this design where a port is *not* subject to the caveat below.
 
 The stated boundary was "no router port forwarding, plus UFW denying inbound"
 (D1, spec §5.3). The second half was not true. Docker publishes ports by DNAT in
@@ -322,10 +325,12 @@ The stated boundary was "no router port forwarding, plus UFW denying inbound"
 the chain UFW filters. Every service in this stack was therefore reachable from
 any attached network while `ufw status` reported a default-deny firewall.
 
-`setup.sh` now appends a guarded block to `/etc/ufw/after.rules` populating the
+`setup.sh` now writes a guarded block into `/etc/ufw/after.rules` populating the
 `DOCKER-USER` chain — which Docker leaves empty and evaluates first, precisely
-for this — returning established traffic, loopback, `tailscale0` and
-`$LAN_SUBNET`, and dropping everything else.
+for this — returning established traffic, loopback, the remote-access interface
+(`tailscale0` when this was written, `wg0` since D26) and `$LAN_SUBNET`, and
+dropping everything else. D28 adds the container bridges to that list and
+explains why leaving them out was a defect rather than a tightening.
 
 It is skipped with a warning when `LAN_SUBNET` is unset, because applying it
 without one would cut the LAN off from Jellyfin and break Infuse on the Apple
@@ -480,6 +485,34 @@ invariant 7 in `CLAUDE.md`: a CDN link renders perfectly for a client with
 internet and breaks for one without, and a remote-access client is not
 guaranteed a route out.
 
+**Amended by D26, and by what shipping on a real domain turned out to mean.**
+Four literal claims above have moved:
+
+- There are **seven** admin chips and **nine** marks, not six and eight — D26
+  added the wg-easy chip. Its symbol is also the one exception to "the marks are
+  the projects' own": WireGuard's logo is a wordmark that does not survive being
+  put on a 512-square plate, so that one is a hand-drawn shield and keyhole.
+- The `validate.sh` check compares the **tiles'** `data-sub` set against the
+  routes, not the whole page's. The seven chips carry a `data-sub` too and are
+  not routes; comparing all of them would fail by construction.
+- The CORS paragraph is moot twice over. Under D25 **no admin UI is proxied at
+  all**, so there is nothing to put a header on, and the count was never eight.
+- **The Manage dots cannot fire on the deployed page, and the reason is
+  structural.** The landing page is served only at `PUBLIC_DOMAIN`, over HTTPS,
+  while the chips point at `http://<lan-ip>:<port>` — nothing proxies them and no
+  certificate exists for a private address. A `fetch` from an `https:` origin to
+  an `http:` URL is blocked as active mixed content regardless of
+  `mode: 'no-cors'`, so every probe rejects. The visible outcome was already
+  right, by accident: the group reported unreliable and the dots hid themselves,
+  which is what "an instrument that is not working should not report" asks for.
+  `app.js` now skips the probe outright over HTTPS and hides the dots directly,
+  so the console stays clean and the behaviour is chosen rather than emergent.
+  The chips remain clickable — that is a navigation, not a subresource.
+
+  Making them work would mean serving the page over plain HTTP somewhere, or
+  issuing certificates for private addresses, or proxying the admin apps. The
+  third is the one thing this design exists to refuse. The dots stay off.
+
 ### D25. Two doors: a public one for the household, a VPN for the administrator
 
 **The VPN is wg-easy, not Tailscale, as of D26.** The argument below is
@@ -523,9 +556,16 @@ which means building a custom Caddy image, and nothing else here has a build
 step.
 
 **Hiding Manage is presentation, not access control.** Caddy tags requests from
-RFC1918 and the Tailscale CGNAT range with a header, and the landing page
-template renders the admin section only when it is present. Say it plainly
-wherever it comes up: the boundary is the absent route, not the absent link.
+the private ranges with a header, and the landing page template renders the
+admin section only when it is present. Say it plainly wherever it comes up: the
+boundary is the absent route, not the absent link.
+
+Under D26 those ranges are the three RFC1918 blocks and nothing else — the
+Tailscale CGNAT range this originally also matched is gone with Tailscale, and
+`WG_SUBNET` defaults to `10.8.0.0/24` precisely so tunnel clients land inside
+`10.0.0.0/8`. Choose a WireGuard subnet outside RFC1918 and the Manage section
+silently stops rendering for exactly the clients that need it most; `validate.sh`
+now cross-checks the two rather than leaving it to the comment in `sites.caddy`.
 The snippet originally lived in each Caddyfile rather than the shared routes
 file because the dev box needed a wider range; with one environment it has moved
 into `sites.caddy` alongside the routes that import it.
@@ -651,6 +691,69 @@ symptom will be imports failing. `df -h /data` is the manual control until the
 Revisit if the 2 TB turns out to be in use for longer than a few months: a
 free-space floor in SABnzbd and a seed-ratio limit in qBittorrent are the two
 cheapest fixes and would both survive the swap.
+
+### D28. The DOCKER-USER chain must let containers out, and the block is rewritten rather than skipped
+
+Two defects in D19's implementation, found in review before the box was ever
+brought up. Neither changes the design; both would have stopped it working.
+
+**The DROP was not scoped to inbound.** The chain read: return established, `-i
+wg0`, `-i lo`, `-s $LAN_SUBNET`, dports 80 and 443, then `-j DROP`. Its own
+comment said "anything else reaching a container **from off-box**" — but
+`DOCKER-USER` is jumped from the *top of `FORWARD`*, so it sees every forwarded
+packet, and a container's own outbound SYN matches none of those RETURNs. Not
+established (it is NEW), not `wg0` or `lo`, and not `$LAN_SUBNET` — the compose
+bridge is `172.x`, the LAN is not. So it fell to the DROP.
+
+The first casualty is DNS, which makes it total. Docker's embedded resolver
+forwards upstream queries from inside the container's network namespace, so
+those packets are forwarded traffic with a bridge source address on UDP/53.
+Nothing resolves anything: no indexers, no Usenet provider, no metadata, and no
+ACME — meaning **Caddy could never have obtained a certificate**, on a change
+whose entire purpose was to put the box on a public domain.
+
+The fix is two RETURNs above the DROP:
+
+```
+-A DOCKER-USER -i br+ -s 172.16.0.0/12 -j RETURN
+-A DOCKER-USER -i docker0 -s 172.16.0.0/12 -j RETURN
+```
+
+Scoped by interface *and* source, because either alone is wrong in a different
+direction: matching only the interface trusts a host bridge named `br0`, which
+this box would have the day it ran a VM; matching only the source trusts a WAN
+packet forging a bridge address. `172.16.0.0/12` is Docker's default address
+pool — change `default-address-pools` in `/etc/docker/daemon.json` and these
+must follow it.
+
+Worth noting what this does *not* weaken. Inbound is untouched: a WAN packet
+aimed at 8096 arrives on the external interface, matches neither new rule, and
+still dies at the DROP. The three mechanisms of D25 are all intact.
+
+**The block was write-once.** `setup.sh` returned early if the BEGIN marker was
+already in `/etc/ufw/after.rules`, so once written it could never be corrected.
+That is worse than it sounds given the documented order of operations: the
+README had `setup.sh` running *before* `.env` was filled in, and `report()` ends
+by telling you to re-run the script once `wg0` exists. A re-run added the `ufw
+allow in on wg0` rule and silently left the firewall block stale — with the
+wrong `LAN_SUBNET`, or without the 80/443 returns, while every message on screen
+said the script had succeeded.
+
+It now renders the block, compares it against what is between the markers, and
+rewrites in place when they differ. Unchanged input is still a no-op, so the
+marker appears exactly once however many times it runs — which is the property
+`CLAUDE.md`'s rehearsal test asserts. The `--dry-run` path also prints the block
+in full now, instead of a one-line summary: these are the highest-consequence
+lines the script writes and a dry run is where they are supposed to be read.
+
+**Two smaller things went in alongside.** `sysctl --system` moved outside the
+`[[ -f $sysconf ]]` guard, since a first run that warned "written but not yet
+active" was asking for a re-run that would then skip the retry. And the fail2ban
+`caddy-auth` jail gained an `ignoreip` for loopback, `$LAN_SUBNET` and
+`$WG_SUBNET`, plus `maxretry = 20`: it bans on any 401 or 403, Jellyfin and
+Jellyseerr both emit those routinely on session expiry, and ten in ten minutes
+is an ordinary evening on a flaky phone connection. Unfixed, the jail's first
+victim would have been the household.
 
 ---
 

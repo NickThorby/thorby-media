@@ -415,6 +415,27 @@ provision_jellyseerr() {
     fi
   }
 
+  # Jellyseerr sits behind Caddy at seerr.<domain>, so without this every request
+  # it logs — and every request it rate-limits — carries Caddy's container
+  # address instead of the client's. It is the same problem Jellyfin has, and the
+  # reason setup.sh ships the fail2ban jellyfin jail disabled: a ban list built
+  # from proxy addresses bans the proxy. Jellyseerr can be told over the API;
+  # Jellyfin's KnownProxies cannot, and stays a manual post-wizard step (README).
+  #
+  # Idempotent — reads the current value and only writes when it differs. The
+  # read is allowed to fail without taking the script with it: this runs under
+  # `set -euo pipefail`, where an unexpected status from one settings endpoint
+  # would otherwise abort a provisioning run that is otherwise fine.
+  local trust
+  trust=$(jseerr GET /api/v1/settings/main 2>/dev/null | jq -r '.trustProxy // false') || trust=""
+  if [[ "$trust" == "true" ]]; then
+    ok "trustProxy already enabled"
+  elif jseerr POST /api/v1/settings/main '{"trustProxy":true}' >/dev/null 2>&1; then
+    ok "trustProxy enabled — real client addresses in the log, not Caddy's"
+  else
+    warn "could not set trustProxy; set it under Settings > General > Enable Proxy Support"
+  fi
+
   # Look the profile up by name rather than hardcoding an id — Recyclarr creates
   # these, and the id depends on what order things happened in.
   local rprofile sprofile rid sid

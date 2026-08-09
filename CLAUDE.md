@@ -79,6 +79,14 @@ requiring explicit justification.
    filter Docker-published ports at all — the `DOCKER-USER` rules are what make
    that true (decisions.md D1, D19, D26).
 
+   **`DOCKER-USER` is not a boundary control alone.** It is jumped from the top
+   of `FORWARD`, so it filters container **egress** and container-to-container
+   traffic as well as inbound. A rule set that only enumerates who may come in
+   drops everything the containers try to reach — DNS first, which takes the
+   whole stack with it and stops Caddy ever reaching Let's Encrypt. The two
+   `br+`/`docker0` RETURNs exist for that and are not optional (decisions.md
+   D28). Reason about any change to that chain in both directions.
+
 5. **Every app enforces authentication, and it is asserted, not assumed.** The
    *arr auth method and scope are pinned as environment variables so they are
    re-applied on every container start; credentials come from `provision.sh`.

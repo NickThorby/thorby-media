@@ -149,6 +149,40 @@ else
   printf '      %s\n' "Use INIT_USERNAME / INIT_PASSWORD instead (decisions.md D26)."
 fi
 
+# The tunnel subnet has to fall inside the ranges caddy/sites.caddy treats as
+# private, or the landing page stops rendering Manage for tunnel clients — the
+# one group that most needs it. Nothing else couples these two files, and the
+# symptom (a page that looks right from the sofa and wrong from the airport)
+# points nowhere near either of them.
+wg_cidr=$(jq -r '.services["wg-easy"].environment.INIT_IPV4_CIDR // ""' <<<"$rendered")
+priv_line=$(grep -m1 '@private remote_ip' caddy/sites.caddy || true)
+if [[ "$priv_line" != *"10.0.0.0/8"*   ||
+      "$priv_line" != *"172.16.0.0/12"* ||
+      "$priv_line" != *"192.168.0.0/16"* ]]; then
+  skip "private_only lists non-default ranges — check WG_SUBNET against them by hand"
+else
+  case "${wg_cidr%%/*}" in
+    10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*)
+      ok "WG_SUBNET ($wg_cidr) is inside the private_only ranges" ;;
+    *)
+      bad "WG_SUBNET ($wg_cidr) is outside caddy/sites.caddy's private_only ranges"
+      printf '      %s\n' "Manage will not render for tunnel clients. Add the range to the" \
+                          "@private matcher in caddy/sites.caddy, or move WG_SUBNET into RFC1918." ;;
+  esac
+fi
+
+# A placeholder domain reaches Caddy as a real one: it starts, asks Let's Encrypt
+# for a certificate it can never validate, and burns the five-failures-per-hour
+# budget for the name you actually meant to use.
+pub=$(jq -r '.services.caddy.environment.PUBLIC_DOMAIN // ""' <<<"$rendered")
+case "$pub" in
+  ""|*CHANGEME*|example.com|*.example.com|*.example.net|*.example.org|*.invalid|*.test|*.localhost)
+    bad "PUBLIC_DOMAIN is \"$pub\" — a placeholder, not a name that can be issued for"
+    printf '      %s\n' "Set it to the real domain in .env before starting Caddy." ;;
+  *)
+    ok "PUBLIC_DOMAIN ($pub) is not a placeholder" ;;
+esac
+
 # The *arr auth settings are the difference between a login prompt and an
 # anonymous admin session, and deleting them looks like tidying up. Verified:
 # with AUTH__REQUIRED unset to DisabledForLocalAddresses, GET / returns 200.

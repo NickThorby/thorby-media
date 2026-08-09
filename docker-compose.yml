@@ -316,6 +316,14 @@ services:
       # Let's Encrypt expiry warnings. Required rather than defaulted: a silent
       # fallback to no contact address means no warning when renewal breaks.
       ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is unset — Let's Encrypt needs a contact address}
+      # Which ACME directory to issue from. Point it at staging while proving
+      # out DNS and the port forwards — production allows five failed
+      # validations per hostname per hour, and the two things most likely to be
+      # wrong (a missing port-80 forward, an unpropagated record) can only be
+      # found by trying. Defaulted here rather than left to the Caddyfile's own
+      # default so the variable is never present-but-empty, which would leave
+      # `acme_ca` with no argument.
+      CADDY_ACME_CA: ${CADDY_ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
       # The address the Manage links point at, and the ports they use. Templated
       # into the landing page at request time so .env stays the only place a
       # host port is written down.

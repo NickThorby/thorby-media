@@ -397,17 +397,27 @@ else
 
   # The setup wizard is the failure mode that matters. If it is reachable, the
   # database is empty and the next visitor becomes the VPN administrator.
-  if [[ "$(code "$WG_URL/api/setup")" == "404" ]]; then
-    ok "wg-easy: no setup wizard is exposed"
-  else
-    warn_setup=$(code "$WG_URL/api/setup")
-    if [[ "$warn_setup" == "200" ]]; then
+  #
+  # 404 is the ONLY pass. This used to treat anything that was not 200 as a
+  # pass, which meant 000 — no answer at all — was reported ok: the check most
+  # able to hurt you, failing in the reassuring direction. An unreachable probe
+  # proves nothing about whether the wizard is open, and the session check above
+  # already establishes what a 000 here means.
+  setup=$(code "$WG_URL/api/setup")
+  case "$setup" in
+    404)
+      ok "wg-easy: no setup wizard is exposed" ;;
+    200)
       bad "wg-easy: the setup wizard is OPEN — /etc/wireguard has been lost"
-      note "The first visitor becomes the VPN admin. Stop the container now."
-    else
-      ok "wg-easy: setup endpoint returns $warn_setup, not an open wizard"
-    fi
-  fi
+      note "The first visitor becomes the VPN admin. Stop the container now." ;;
+    000)
+      bad "wg-easy: no answer from /api/setup — the wizard state is UNKNOWN"
+      note "Not a pass. Check INSECURE=true and that WG_UI_PORT is listening:"
+      note "  docker compose logs wg-easy; ss -lntp | grep ${WG_UI_PORT:-51821}" ;;
+    *)
+      bad "wg-easy: GET /api/setup returned $setup, expected 404"
+      note "Confirm against the running version before trusting this." ;;
+  esac
 fi
 
 echo
