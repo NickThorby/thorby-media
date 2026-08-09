@@ -400,7 +400,16 @@ else
   # which is Docker's default pool — so switching this on does not merely trust
   # the LAN, it hands an unauthenticated session to every container on the
   # bridge. Precisely the shape of the DisabledForLocalAddresses trap in D18.
-  if [[ "$(jq -r '.authBypassActive // "unknown"' <<<"$status")" == "false" ]]; then
+  # NOT `.authBypassActive // "unknown"`. jq's // substitutes when the left side
+  # is null OR false, so that idiom returns "unknown" precisely when the bypass
+  # is off -- the check could never pass, and the one state it was written to
+  # confirm was the one it reported as a failure. It is safe in the three checks
+  # above only because they expect "true", where a false value failing is the
+  # right answer for the wrong reason. Anyone flipping one of those to expect
+  # "false" inherits this bug.
+  bypass=$(jq -r 'if has("authBypassActive") then (.authBypassActive | tostring)
+                  else "unknown" end' <<<"$status")
+  if [[ "$bypass" == "false" ]]; then
     ok "Cleanuparr: local-address auth bypass is off"
   else
     bad "Cleanuparr: local-address auth bypass is ACTIVE"
