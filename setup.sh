@@ -755,6 +755,28 @@ EOF
 configure_firewall() {
   step "Firewall"
 
+  # ufw's Python writes the rules files back with an ascii codec, so a single
+  # non-ASCII byte anywhere in after.rules makes every ufw invocation below die
+  # with UnicodeEncodeError — including the two default-policy calls, before any
+  # of this has run. The file that breaks it is one we wrote: an earlier
+  # revision of this script put em dashes in its own DOCKER-USER comments,
+  # following the repo's prose style. Repair that here, because the rewrite that
+  # would otherwise fix it lives at the END of this function and never gets
+  # reached.
+  local afterrules=/etc/ufw/after.rules
+  if [[ -f "$afterrules" ]] && LC_ALL=C grep -qP '[^\x00-\x7F]' "$afterrules"; then
+    if $DRY_RUN; then
+      info "[dry-run] transliterate non-ASCII in $afterrules (ufw cannot write it)"
+    else
+      sed -i 's/\xe2\x80\x94/--/g; s/\xe2\x80\x93/-/g; s/\xe2\x80\x99/'"'"'/g' "$afterrules"
+      if LC_ALL=C grep -qP '[^\x00-\x7F]' "$afterrules"; then
+        die "$afterrules still contains non-ASCII, which ufw refuses to write.
+       Find it with:  grep -nP '[^\\x00-\\x7F]' $afterrules"
+      fi
+      ok "repaired non-ASCII in $afterrules"
+    fi
+  fi
+
   run ufw --force default deny incoming
   run ufw --force default allow outgoing
 
@@ -898,7 +920,7 @@ ${marker}
 :DOCKER-USER - [0:0]
 -A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
 # Container-originated traffic. This chain is jumped from the TOP of FORWARD, so
-# it sees egress and container-to-container as well as inbound — the DROP at the
+# it sees egress and container-to-container as well as inbound; the DROP at the
 # bottom is not scoped to arriving packets and never was. Without these two it
 # kills every outbound connection a container makes, starting with Docker's
 # embedded DNS resolver, whose upstream queries leave the container's own
@@ -909,7 +931,7 @@ ${marker}
 # Scoped by interface AND source on purpose. The interface match alone would
 # trust a host bridge named br0, which this box would have if it ever ran VMs;
 # the source match alone would trust a WAN packet forging a bridge address.
-# 172.16.0.0/12 is Docker's default address pool — change
+# 172.16.0.0/12 is Docker's default address pool: change
 # default-address-pools in /etc/docker/daemon.json and these must follow.
 -A DOCKER-USER -i br+ -s 172.16.0.0/12 -j RETURN
 -A DOCKER-USER -i docker0 -s 172.16.0.0/12 -j RETURN
@@ -961,6 +983,15 @@ EOF
     # appended" hid the only thing worth checking.
     while IFS= read -r line; do printf '      | %s\n' "$line"; done <<<"$block"
     return 0
+  fi
+
+  # Belt and braces against the failure configure_firewall repairs above: if
+  # this block ever picks up a non-ASCII character again, fail here with the
+  # cause rather than in ufw's traceback on somebody's next run.
+  if LC_ALL=C grep -qP '[^\x00-\x7F]' <<<"$block"; then
+    die "The DOCKER-USER block contains non-ASCII. ufw writes after.rules with
+       an ascii codec and will refuse every later invocation. Keep this block
+       plain ASCII, whatever the prose style elsewhere."
   fi
 
   cp "$rules" "${rules}.bak"
