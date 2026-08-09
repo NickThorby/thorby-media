@@ -357,7 +357,11 @@ services:
   # Pulls Trash Guides profiles and anime release-group scores into Sonarr and
   # Radarr on a schedule (spec §8). Talks to their APIs only — no /data.
   recyclarr:
-    image: ghcr.io/recyclarr/recyclarr:latest
+    # Pinned to a major, not :latest — Recyclarr publishes no `latest` tag at
+    # all, on either registry, because the config file format changes across
+    # majors. An unpinned reference here does not degrade, it 404s the pull and
+    # takes the whole `docker compose up` with it.
+    image: ghcr.io/recyclarr/recyclarr:8
     container_name: recyclarr
     restart: unless-stopped
     logging: *logging
