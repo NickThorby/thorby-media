@@ -247,12 +247,17 @@ echo "Caddy"
 # `acme_dns cloudflare` only parses in a binary with that module compiled in, so
 # the stock image would report a syntax error in a file that is correct. Docker's
 # layer cache makes the build a no-op unless caddy/Dockerfile changed.
+#
+# The placeholder token has to be shaped like a real one. The Cloudflare module
+# format-checks it while provisioning, before any API call, so an obviously fake
+# string fails validation on a Caddyfile that is perfectly good. Forty
+# characters from the charset it accepts; it is never sent anywhere.
 if ! out=$(docker build -q -t mediaserver/caddy:latest ./caddy 2>&1); then
   bad "caddy image failed to build from caddy/Dockerfile"
   tail -5 <<<"$out" | indent
 elif out=$(docker run --rm -e PUBLIC_DOMAIN=validate.example.com \
            -e ACME_EMAIL=validate@example.com \
-           -e CF_API_TOKEN=validate-placeholder \
+           -e CF_API_TOKEN=0123456789abcdefghijklmnopqrstuvwxyzABCD \
            -v "$PWD/caddy:/etc/caddy:ro" mediaserver/caddy:latest \
            caddy validate --config /etc/caddy/Caddyfile 2>&1); then
   ok "caddy/Caddyfile valid (sites.caddy imported, cloudflare module present)"
@@ -330,6 +335,7 @@ fi
 # shellcheck disable=SC2016  # {$PUBLIC_DOMAIN} is Caddy's literal placeholder
 admin_routes=$({ grep -oE '^[a-z]+\.\{\$PUBLIC_DOMAIN\}' caddy/admin.caddy || true; } \
                | sed -E 's/\..*//' | sort -u)
+# shellcheck disable=SC2016  # {$PUBLIC_DOMAIN} is Caddy's literal placeholder
 admin_blocks=$(grep -cE '^[a-z]+\.\{\$PUBLIC_DOMAIN\} \{' caddy/admin.caddy || true)
 admin_guards=$(grep -cE '^[[:space:]]*import admin_only[[:space:]]*$' caddy/admin.caddy || true)
 if [[ "$admin_blocks" -gt 0 && "$admin_blocks" == "$admin_guards" ]]; then
