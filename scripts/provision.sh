@@ -676,7 +676,7 @@ upsert_download_client() {
       | .priority = $p
       | .fields = (
           ((.fields // []) | map(. as $o | (($f | map(select(.name == $o.name)) | first) // $o)))
-          + ($f | map(select($have | index(.name) | not)))
+          + ($f | map(select(. as $d | ($have | index($d.name)) == null)))
         )
     ' <<<"$existing")
     arr PUT "$url" "$key" "/api/$ver/downloadclient/$(jq -r '.id' <<<"$existing")" \
