@@ -680,23 +680,44 @@ configure_wireguard_host() {
   local modconf=/etc/modules-load.d/wireguard.conf
   local sysconf=/etc/sysctl.d/99-wireguard.conf
 
-  if [[ -f "$modconf" ]]; then
-    ok "$modconf already present"
-  else
-    write_file "$modconf" 0644 <<'EOF'
-# Managed by setup.sh. wg-easy drops SYS_MODULE, so it cannot load this itself.
+  # wg-quick's PostUp runs ip6tables as well as iptables, because WG_SUBNET6 is
+  # set. The container holds NET_ADMIN but deliberately not SYS_MODULE (D26), so
+  # it cannot insert a netfilter module itself — and a box that has never run
+  # ip6tables has no ip6_tables loaded. `wg-quick up` then fails half way
+  # through, deletes wg0 on the way out, and wg-easy reports unhealthy with the
+  # actual cause twenty lines up its log.
+  local desired
+  desired=$(cat <<'EOF'
+# Managed by setup.sh. wg-easy drops SYS_MODULE, so it cannot load these
+# itself. wireguard is the tunnel; the ip6* modules are what wg-quick's IPv6
+# PostUp rules need before they will apply (decisions.md D26).
 wireguard
+ip6_tables
+ip6table_nat
+ip6table_filter
 EOF
+)
+
+  # Compared rather than skipped-if-present: a file written by an earlier
+  # version of this script is exactly the case that needs rewriting, which is
+  # the lesson D28 already learned on the DOCKER-USER block.
+  if [[ -f "$modconf" ]] && [[ "$(cat "$modconf")" == "$desired" ]]; then
+    ok "$modconf already current"
+  else
+    write_file "$modconf" 0644 <<<"$desired"
   fi
 
-  if lsmod 2>/dev/null | grep -q '^wireguard'; then
-    ok "wireguard module loaded"
-  elif run modprobe wireguard; then
-    ok "wireguard module loaded"
-  else
-    warn "modprobe wireguard failed — wg0 will not come up. Expected inside a"
-    warn "  container; on the box, check the kernel has the module."
-  fi
+  local m
+  for m in wireguard ip6_tables ip6table_nat ip6table_filter; do
+    if lsmod 2>/dev/null | grep -q "^${m} "; then
+      ok "$m already loaded"
+    elif run modprobe "$m"; then
+      ok "loaded $m"
+    else
+      warn "modprobe $m failed — expected inside a container; on the box it"
+      warn "  means wg0 will not come up cleanly."
+    fi
+  done
 
   # ip_forward is what lets a peer's packets reach anything but this box.
   # Docker already sets it at daemon start; writing it here makes it explicit
