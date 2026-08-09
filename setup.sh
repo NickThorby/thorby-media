@@ -849,7 +849,10 @@ configure_firewall() {
     # VPN-only (D33). Deleted, not merely skipped: this script is how the model
     # is changed, and a rule surviving from a run when PUBLIC_HTTP was true is
     # an opening that `ufw status` shows and nobody reads.
-    if ufw status 2>/dev/null | grep -qE '^80/tcp[[:space:]]+ALLOW IN[[:space:]]+Anywhere'; then
+    # `ufw status` prints ALLOW; only `ufw status verbose` prints ALLOW IN.
+    # Matching the verbose form here silently never fired, so the rules stayed
+    # open while the script reported them closed.
+    if ufw status 2>/dev/null | grep -qE '^80/tcp[[:space:]]+ALLOW'; then
       run ufw delete allow 80/tcp
       run ufw delete allow 443/tcp
       ok "closed public 80/443 — PUBLIC_HTTP is not true"
@@ -1014,12 +1017,25 @@ EOF
 
   local verb="appended"
   $present && verb="rewritten"
-  if [[ -n "${PUBLIC_DOMAIN:-}" ]]; then
+  if [[ "${PUBLIC_HTTP:-false}" == "true" ]]; then
     ok "DOCKER-USER rules ${verb} (wg0 + ${LAN_SUBNET} + public 80/443 in)"
   else
     ok "DOCKER-USER rules ${verb} (wg0 + ${LAN_SUBNET} in, rest dropped)"
   fi
-  info "verify after reload:  iptables -L DOCKER-USER -n -v"
+
+  # after.rules is read only when ufw loads its ruleset, and `ufw --force
+  # enable` on an already-active firewall does not re-read it. Every re-run
+  # would otherwise leave the file and the kernel disagreeing while every line
+  # above said success -- and re-running is the documented workflow, because
+  # wg0 does not exist on the first pass. A rule that is written and never
+  # loaded protects nothing (review-2026-08).
+  if ufw status 2>/dev/null | grep -q '^Status: active'; then
+    run ufw reload
+    ok "ufw reloaded, so the block above is in the kernel and not just on disk"
+  else
+    info "ufw inactive; the block loads when it is enabled below"
+  fi
+  info "verify:  iptables -L DOCKER-USER -n -v"
 }
 
 report() {
