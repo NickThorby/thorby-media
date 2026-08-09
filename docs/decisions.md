@@ -1183,6 +1183,16 @@ motivation:
   probe are the same URL again, and a dot attests to the link beneath it. D31's
   `data-lan` mechanism was removed for the same reason.
 
+  **Amendment.** This was claimed here before it was true. Making the URLs match
+  was necessary and not sufficient: `app.js` also carried an explicit guard that
+  set `data-probes="unreliable"` on the admin group whenever the page was served
+  over https, which hides the dots via CSS rather than merely skipping the
+  fetch. That guard was correct under D31 and obsolete under D34, and removing
+  it is what actually restored the dots. Noticed only because the dots were
+  visibly missing on the deployed page — nothing in `validate.sh` covers
+  behaviour that only exists at runtime, and the entry above asserted a result
+  that had never been looked at.
+
 **Two things it broke, both found by requesting all eleven names on the target
 rather than by reading.** SABnzbd 403s any `Host` it has not been told about —
 even `Host: sabnzbd` — so the proxy name went into `host_whitelist`. And wg-easy

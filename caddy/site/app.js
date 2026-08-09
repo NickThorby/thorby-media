@@ -82,37 +82,26 @@
   probeGroup(document.querySelector('.tiles'));
 
   // The nine admin tools are only probed once someone opens the drawer, which
-  // saves nine cross-origin requests on the household visits that never do.
+  // saves nine requests on the household visits that never do. `once` because
+  // toggle fires on close as well as open, and one round of results is enough.
   //
-  // Guarded twice.
+  // Still guarded on the drawer existing: it is templated out entirely for
+  // clients off the LAN and off the tunnel, and without the check this throws
+  // and takes the spotlight code below with it, on the one page that must never
+  // look broken.
   //
-  // The drawer is absent entirely for clients off the LAN and off the tunnel —
-  // Caddy templates it out. Without that guard this throws and takes the
-  // spotlight code below with it, on the one page that must never look broken.
-  //
-  // And the probes cannot work over HTTPS at all. This page is served only at
-  // PUBLIC_DOMAIN, where Caddy redirects :80 to :443, while the admin chips
-  // point at http://<lan-ip>:<port> — nothing proxies them and there is no
-  // certificate for a private address. A fetch from an https: origin to an
-  // http: URL is blocked as active mixed content whatever `mode: 'no-cors'`
-  // says, so all nine would reject, the group would be marked unreliable and
-  // the dots hidden. The visible result is identical either way; skipping is
-  // honest about it and keeps the console clean. Clicking the chips is
-  // unaffected — that is a navigation, not a subresource.
-  //
-  // This is exactly the wall the hero tiles' data-probe exists to step around:
-  // they have a public https name to probe instead, and the chips never did.
+  // There was a second guard here that skipped the probe whenever the page was
+  // served over https, and hid the dots rather than leave nine greys that meant
+  // nothing. It was right at the time: the chips pointed at
+  // http://<lan-ip>:<port>, and a fetch from an https: origin to an http: URL
+  // is blocked as active mixed content whatever `mode: 'no-cors'` says, so all
+  // nine would have rejected. D34 put the admin apps behind Caddy on real
+  // certificates, so every chip is https now and the wall is gone. These dots
+  // work for the first time since D24 recorded them as unfixable.
   const manage = document.querySelector('.manage');
   const admin = document.querySelector('.admin');
   if (manage && admin) {
-    if (location.protocol === 'https:') {
-      // Hide the dots outright rather than leaving them at their default grey.
-      // Skipping the probe alone would paint nine "unknown" dots that no
-      // longer mean anything, which is the wall of grey probeGroup avoids.
-      admin.dataset.probes = 'unreliable';
-    } else {
-      manage.addEventListener('toggle', () => probeGroup(admin), { once: true });
-    }
+    manage.addEventListener('toggle', () => probeGroup(admin), { once: true });
   }
 
   /* ── Pointer spotlight ──────────────────────────────────────────────────── */
