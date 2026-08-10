@@ -458,7 +458,7 @@ needs. No VPN, no app, no port to remember.
 
 The *Manage* section, with the eight admin tools, renders **only for clients on
 the LAN or the tunnel**. That is a courtesy, not a control: those apps are
-unreachable from the internet because every route in `caddy/admin.caddy` refuses
+unreachable from the internet because every route in `caddy/conf/admin.caddy` refuses
 a client outside RFC1918, not because a link is hidden.
 
 The same LAN-or-tunnel test decides where the two public tiles point. Inside the
@@ -566,11 +566,27 @@ video, documents — must not live only on this machine.
 **Updates** are deliberate, not automatic:
 
 ```bash
+git pull
 docker compose pull && docker compose up -d
+./scripts/validate.sh                 # see the note below before skipping this
 ```
 
 Back up `/opt/mediaserver` first — that is where every app's database and
 settings live. The media disk holds no configuration.
+
+**If the pull touched `caddy/conf/`, Caddy needs telling.** It reads its config
+once, at start, and `compose up -d` does not restart a container whose
+definition has not changed — so a new or deleted route sits unserved while
+everything reports healthy:
+
+```bash
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+```
+
+`validate.sh` checks this: it compares the names the live process is serving
+against the file on disk, and fails with the reload command if they differ. That
+check exists because a deleted service kept a live route for a day and nothing
+noticed (decisions.md D39).
 
 **Drive health** is the single point of failure in a one-disk build. `smartd`
 runs a short self-test daily and a long one weekly, and alerts on attribute
@@ -654,7 +670,7 @@ the browser, so they report what *your device* can reach, not what the box
 thinks. On the two Watch/Request tiles: all of them missing means nothing was
 reachable — usually the client has dropped off the VPN; a single grey one means
 that hostname is not answering, so check it is still routed in
-`caddy/sites.caddy`. The dots cannot see a stopped container, because Caddy
+`caddy/conf/sites.caddy`. The dots cannot see a stopped container, because Caddy
 answers 502 and the probe cannot read the status (decisions.md D24) — they mean
 "answering", not "healthy".
 
@@ -674,8 +690,10 @@ The links themselves work; only the indicator is absent.
 | `docker-compose.yml` | The whole stack. Complete on its own; no flags, no override |
 | `.env.example` | Every host-specific value |
 | `setup.sh` | Debian host provisioning — idempotent, `--dry-run`, opt-in disk format |
-| `caddy/Caddyfile` | Certificate issuance — Let's Encrypt over HTTP-01 |
-| `caddy/sites.caddy` | The reverse-proxy routes and the snippets they import |
+| `caddy/conf/` | Caddy's config, mounted as a **directory** so a `git pull` is visible to the container (D39) |
+| `caddy/conf/Caddyfile` | Certificate issuance — Let's Encrypt over DNS-01 |
+| `caddy/conf/sites.caddy` | The three public-capable routes, and the snippets they import |
+| `caddy/conf/admin.caddy` | The eight admin routes, each behind the `admin_only` guard |
 | `caddy/site/` | The landing page — Watch / Request, admin tools collapsed, live reachability dots |
 | `config/recyclarr/recyclarr.yml` | Quality profile templates, incl. anime |
 | `scripts/provision.sh` | Wire the stack together over the apps' APIs — idempotent |

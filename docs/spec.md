@@ -342,7 +342,7 @@ lives in is the answer to "could this be reached from the internet". Certificate
 come from Let's Encrypt over **DNS-01** against the Cloudflare zone — see §5.1;
 there is no inbound path for an HTTP-01 challenge.
 
-`caddy/sites.caddy` — the three names that are allowed to be public, and the only
+`caddy/conf/sites.caddy` — the three names that are allowed to be public, and the only
 ones served if `PUBLIC_HTTP` is ever set true:
 
 - `media.thorby.tech` -> the landing page (static, served by Caddy itself)
@@ -350,7 +350,7 @@ ones served if `PUBLIC_HTTP` is ever set true:
 - `seerr.media.thorby.tech` -> `jellyseerr:5055` (the container kept its old
   name through the seerr rename — decisions.md D37)
 
-`caddy/admin.caddy` — the eight that must never be. Sonarr, Radarr, Prowlarr,
+`caddy/conf/admin.caddy` — the eight that must never be. Sonarr, Radarr, Prowlarr,
 Bazarr, qBittorrent (`qbit.`), SABnzbd (`sab.`), Cleanuparr and the wg-easy UI
 (`wg.`). Every block imports the `admin_only` snippet, which returns 403 to any
 client outside RFC1918 before the proxy runs, and `scripts/validate.sh` fails if
@@ -378,8 +378,8 @@ mechanisms below are kept anyway, because they are what makes that still true
 the day someone sets `PUBLIC_HTTP=true` — which is exactly the day nobody will
 re-derive this reasoning:
 
-1. **No public route.** They are absent from `caddy/sites.caddy` — asserted by
-   `validate.sh` — and the routes they do have, in `caddy/admin.caddy`, each
+1. **No public route.** They are absent from `caddy/conf/sites.caddy` — asserted by
+   `validate.sh` — and the routes they do have, in `caddy/conf/admin.caddy`, each
    403 a client outside RFC1918 before the proxy runs. D34 traded "there is no
    route" for "the route refuses", which is one mechanism where there were
    three, and is why `validate.sh` asserts the guard mechanically.

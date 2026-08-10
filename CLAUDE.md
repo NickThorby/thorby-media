@@ -73,7 +73,7 @@ requiring explicit justification.
    built image in the stack.
 
    The other eight apps are kept out of `sites.caddy` entirely. Since D34 they
-   do have names, in `caddy/admin.caddy`, where every block imports the
+   do have names, in `caddy/conf/admin.caddy`, where every block imports the
    `admin_only` guard that 403s any client outside RFC1918 — so "there is no
    route" became "the route refuses", one mechanism where there were three.
    `validate.sh` fails if a block in that file omits the guard, and still fails
@@ -159,10 +159,13 @@ docker-compose.yml        the stack (deliverable §9.1)
 setup.sh                  host provisioning for Debian (deliverable §9.4)
 caddy/
   Dockerfile              Caddy + the Cloudflare DNS module, for DNS-01
-  Caddyfile               certificate issuance only; imports the two route files
-  sites.caddy             the three public-capable routes, plus the `common` and
+  conf/                   mounted as a DIRECTORY, not three files — a file bind
+                          mount binds the inode, so `git pull` would leave the
+                          container serving the old config forever (D39)
+    Caddyfile             certificate issuance only; imports the two route files
+    sites.caddy           the three public-capable routes, plus the `common` and
                           `private_only` snippets
-  admin.caddy             the eight admin routes, each behind `admin_only` (D34)
+    admin.caddy           the eight admin routes, each behind `admin_only` (D34)
   site/                   the landing page, served by Caddy at the bare domain
                           — no framework, no build step, no external requests
     index.html            Watch / Request tiles, collapsed admin disclosure,
@@ -244,6 +247,13 @@ validates the Caddyfile, checks the landing page (invariant 7 — no external
 `href` or a `data-lan`, every `{{env}}` the page reads is set on the caddy
 service, and the tiles' `data-sub` set still equals the `sites.caddy` route
 set), and shellchecks every script. Run it before every commit.
+
+One check is not static: if Caddy is running, it compares the hostnames the
+**live** process serves against `caddy adapt` of the file on disk. Caddy reads
+its config only at start, and `compose up -d` does not recreate a container
+whose definition has not changed, so a pulled route change can sit unserved
+indefinitely with everything looking healthy. That is how a deleted service kept
+a live route for a day (D39). It skips when the stack is down.
 
 Not everything it prints is a pass or a fail. A yellow `–` is a warning it
 cannot resolve on its own — a `WG_SUBNET` outside the ranges `private_only`

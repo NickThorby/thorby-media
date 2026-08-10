@@ -156,7 +156,7 @@ admin_host=$(jq -r '.services.caddy.environment.ADMIN_HOST // ""' <<<"$rendered"
 svc_ips=$(jq -r '[.services | to_entries[] | select(.key != "caddy")
                   | (.value.ports // [])[] | .host_ip // ""] | unique | .[]' <<<"$rendered")
 if [[ -z "$admin_host" ]]; then
-  bad "ADMIN_HOST is unset — caddy/admin.caddy needs it to reach the wg-easy UI"
+  bad "ADMIN_HOST is unset — caddy/conf/admin.caddy needs it to reach the wg-easy UI"
 elif ! grep -qvxE '127\.0\.0\.1|::1' <<<"$svc_ips"; then
   ok "services publish on loopback only — no admin port is exposed on the LAN"
 else
@@ -187,13 +187,13 @@ else
   printf '      %s\n' "Use INIT_USERNAME / INIT_PASSWORD instead (decisions.md D26)."
 fi
 
-# The tunnel subnet has to fall inside the ranges caddy/sites.caddy treats as
+# The tunnel subnet has to fall inside the ranges caddy/conf/sites.caddy treats as
 # private, or the landing page stops rendering Manage for tunnel clients — the
 # one group that most needs it. Nothing else couples these two files, and the
 # symptom (a page that looks right from the sofa and wrong from the airport)
 # points nowhere near either of them.
 wg_cidr=$(jq -r '.services["wg-easy"].environment.INIT_IPV4_CIDR // ""' <<<"$rendered")
-priv_line=$(grep -m1 '@private remote_ip' caddy/sites.caddy || true)
+priv_line=$(grep -m1 '@private remote_ip' caddy/conf/sites.caddy || true)
 if [[ "$priv_line" != *"10.0.0.0/8"*   ||
       "$priv_line" != *"172.16.0.0/12"* ||
       "$priv_line" != *"192.168.0.0/16"* ]]; then
@@ -203,9 +203,9 @@ else
     10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*)
       ok "WG_SUBNET ($wg_cidr) is inside the private_only ranges" ;;
     *)
-      bad "WG_SUBNET ($wg_cidr) is outside caddy/sites.caddy's private_only ranges"
+      bad "WG_SUBNET ($wg_cidr) is outside caddy/conf/sites.caddy's private_only ranges"
       printf '      %s\n' "Manage will not render for tunnel clients. Add the range to the" \
-                          "@private matcher in caddy/sites.caddy, or move WG_SUBNET into RFC1918." ;;
+                          "@private matcher in caddy/conf/sites.caddy, or move WG_SUBNET into RFC1918." ;;
   esac
 fi
 
@@ -262,12 +262,55 @@ if ! out=$(docker build -q -t mediaserver/caddy:latest ./caddy 2>&1); then
 elif out=$(docker run --rm -e PUBLIC_DOMAIN=validate.example.com \
            -e ACME_EMAIL=validate@example.com \
            -e CF_API_TOKEN=0123456789abcdefghijklmnopqrstuvwxyzABCD \
-           -v "$PWD/caddy:/etc/caddy:ro" mediaserver/caddy:latest \
+           -v "$PWD/caddy/conf:/etc/caddy:ro" mediaserver/caddy:latest \
            caddy validate --config /etc/caddy/Caddyfile 2>&1); then
-  ok "caddy/Caddyfile valid (sites.caddy imported, cloudflare module present)"
+  ok "caddy/conf/Caddyfile valid (sites.caddy imported, cloudflare module present)"
 else
-  bad "caddy/Caddyfile invalid"
+  bad "caddy/conf/Caddyfile invalid"
   tail -5 <<<"$out" | indent
+fi
+
+# Is the RUNNING Caddy serving the config that is on disk?
+#
+# Caddy reads its config once, at start. Editing a route file changes nothing
+# until it is reloaded, and the gap is invisible: `docker compose ps` says
+# healthy, `docker compose up -d` does not recreate a container whose definition
+# has not changed, and every name keeps answering — with the old route set. On
+# 10 August 2026 that left a route to a service that had been deleted, answering
+# 502 instead of not existing, and it was found by hand rather than by anything
+# here (decisions.md D39).
+#
+# Compares the running config to the file adapted fresh. Both are Caddy's own
+# JSON, so this is not a text diff of the Caddyfile — formatting and comments
+# cannot make it disagree.
+#
+# Skipped rather than failed when the stack is down: this file is otherwise a
+# static check and has to keep working before anything has ever been started.
+if ! docker compose ps --status running --services 2>/dev/null | grep -qx caddy; then
+  skip "caddy is not running — cannot compare the live config to disk"
+else
+  # Compare the set of hostnames each side serves rather than the whole config.
+  # The admin API returns the config Caddy is actually running, which carries
+  # defaults that `adapt` does not emit, so a full document comparison reports a
+  # difference on a stack that is perfectly in step. The host set is the thing
+  # this check exists to protect and it is exact on both sides.
+  hosts_of() { jq -cS '[.apps.http.servers[]?.routes[]?.match[]?.host[]?] | unique'; }
+  ondisk=$(docker compose exec -T caddy caddy adapt --config /etc/caddy/Caddyfile 2>/dev/null | hosts_of || true)
+  # 127.0.0.1, not localhost: Caddy's admin API binds IPv4 only, and `localhost`
+  # inside the container resolves to ::1 first, which is refused.
+  running=$(docker compose exec -T caddy wget -qO- http://127.0.0.1:2019/config/ 2>/dev/null | hosts_of || true)
+  if [[ -z "$running" || "$running" == "[]" ]]; then
+    skip "caddy's admin API returned nothing — cannot confirm the live routes"
+  elif [[ "$running" == "$ondisk" ]]; then
+    ok "the running caddy serves the same names as caddy/conf ($(jq 'length' <<<"$ondisk"))"
+  else
+    bad "caddy is serving DIFFERENT names from the ones in caddy/conf"
+    printf '      %s\n' \
+      "only live:    $(jq -r --argjson d "$ondisk" '. - $d | join(" ")' <<<"$running")" \
+      "only on disk: $(jq -r --argjson r "$running" '. - $r | join(" ")' <<<"$ondisk")" \
+      "docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile"
+  fi
+  unset -f hosts_of
 fi
 
 echo
@@ -307,7 +350,7 @@ fi
 tiles=$(sed -n '/<nav class="tiles"/,/<\/nav>/p' caddy/site/index.html \
         | { grep -oE 'data-sub="[a-z]+"' || true; } | sed -E 's/.*"(.*)"/\1/' | sort -u)
 # shellcheck disable=SC2016  # {$PUBLIC_DOMAIN} is Caddy's literal placeholder, not a shell expansion
-routes=$({ grep -oE '^[a-z]+\.\{\$PUBLIC_DOMAIN\}' caddy/sites.caddy || true; } | sed -E 's/\..*//' | sort -u)
+routes=$({ grep -oE '^[a-z]+\.\{\$PUBLIC_DOMAIN\}' caddy/conf/sites.caddy || true; } | sed -E 's/\..*//' | sort -u)
 if [[ "$tiles" == "$routes" ]]; then
   ok "landing page tiles match the proxied routes"
 else
@@ -324,9 +367,9 @@ fi
 # Cleanuparr is on this list for the same reason at one remove: it holds a
 # qBittorrent credential and every *arr API key, so a session on it reaches the
 # same command execution by proxy (decisions.md D30).
-if out=$(grep -nEi 'sonarr|radarr|prowlarr|bazarr|qbittorrent|sabnzbd|cleanuparr|\bqbit\b|\bsab\b' caddy/sites.caddy \
+if out=$(grep -nEi 'sonarr|radarr|prowlarr|bazarr|qbittorrent|sabnzbd|cleanuparr|\bqbit\b|\bsab\b' caddy/conf/sites.caddy \
          | grep -vE '^[0-9]+:\s*#'); then
-  bad "an admin service appears in caddy/sites.caddy — it must not be routed there"
+  bad "an admin service appears in caddy/conf/sites.caddy — it must not be routed there"
   indent <<<"$out"
 else
   ok "no admin service is routed in sites.caddy"
@@ -337,11 +380,11 @@ fi
 # independent mechanisms carried before, which is only acceptable while it is
 # impossible to add a block here without it. That is this check.
 # shellcheck disable=SC2016  # {$PUBLIC_DOMAIN} is Caddy's literal placeholder
-admin_routes=$({ grep -oE '^[a-z]+\.\{\$PUBLIC_DOMAIN\}' caddy/admin.caddy || true; } \
+admin_routes=$({ grep -oE '^[a-z]+\.\{\$PUBLIC_DOMAIN\}' caddy/conf/admin.caddy || true; } \
                | sed -E 's/\..*//' | sort -u)
 # shellcheck disable=SC2016  # {$PUBLIC_DOMAIN} is Caddy's literal placeholder
-admin_blocks=$(grep -cE '^[a-z]+\.\{\$PUBLIC_DOMAIN\} \{' caddy/admin.caddy || true)
-admin_guards=$(grep -cE '^[[:space:]]*import admin_only[[:space:]]*$' caddy/admin.caddy || true)
+admin_blocks=$(grep -cE '^[a-z]+\.\{\$PUBLIC_DOMAIN\} \{' caddy/conf/admin.caddy || true)
+admin_guards=$(grep -cE '^[[:space:]]*import admin_only[[:space:]]*$' caddy/conf/admin.caddy || true)
 if [[ "$admin_blocks" -gt 0 && "$admin_blocks" == "$admin_guards" ]]; then
   ok "all $admin_blocks admin routes import admin_only"
 else
@@ -354,9 +397,9 @@ fi
 # here and in private_only. Narrowing one alone leaves tunnel clients matching
 # neither: locked out of the admin apps by this list, and losing the Manage
 # block by the other, with nothing to connect the two symptoms.
-admin_ranges=$(grep -m1 '@offnet not remote_ip' caddy/admin.caddy \
+admin_ranges=$(grep -m1 '@offnet not remote_ip' caddy/conf/admin.caddy \
                | sed -E 's/.*remote_ip //' | tr -s ' ' || true)
-priv_ranges=$(grep -m1 '@private remote_ip' caddy/sites.caddy \
+priv_ranges=$(grep -m1 '@private remote_ip' caddy/conf/sites.caddy \
               | sed -E 's/.*remote_ip //' | tr -s ' ' || true)
 if [[ -n "$admin_ranges" && "$admin_ranges" == "$priv_ranges" ]]; then
   ok "admin_only and private_only agree on the private ranges"
@@ -385,8 +428,8 @@ fi
 # `|| true` on both: grep -c prints 0 but exits 1 when nothing matches, and
 # under `set -e` that aborts the whole run — so the check meant to catch a
 # missing `templates` would silently kill validate.sh instead of failing it.
-site_blocks=$(grep -c 'root \* /srv/site' caddy/sites.caddy || true)
-tmpl_blocks=$(grep -c '^[[:space:]]*templates[[:space:]]*$' caddy/sites.caddy || true)
+site_blocks=$(grep -c 'root \* /srv/site' caddy/conf/sites.caddy || true)
+tmpl_blocks=$(grep -c '^[[:space:]]*templates[[:space:]]*$' caddy/conf/sites.caddy || true)
 if [[ "$site_blocks" -gt 0 && "$site_blocks" -eq "$tmpl_blocks" ]]; then
   ok "every block serving /srv/site enables templates"
 else
@@ -401,7 +444,7 @@ fi
 # out ADMIN_HOST and the port map, which is the disclosure the sprite is gated
 # to prevent. The strip is what closes it and it is one deletion from being
 # gone again (decisions.md D31).
-if grep -qE '^[[:space:]]*request_header @public -X-Local-Client[[:space:]]*$' caddy/sites.caddy; then
+if grep -qE '^[[:space:]]*request_header @public -X-Local-Client[[:space:]]*$' caddy/conf/sites.caddy; then
   ok "sites.caddy strips a client-supplied X-Local-Client"
 else
   bad "sites.caddy does not strip X-Local-Client for public clients"

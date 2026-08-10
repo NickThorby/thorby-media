@@ -439,12 +439,20 @@ services:
       # else is exactly the ambiguity that causes mistakes later.
       XDG_DATA_HOME: /caddydata
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./caddy/sites.caddy:/etc/caddy/sites.caddy:ro
-      # The admin routes, which refuse any client outside RFC1918 (D34). A
-      # missing mount here is not a soft failure: Caddyfile imports it, so Caddy
-      # refuses to start rather than quietly serving eight fewer names.
-      - ./caddy/admin.caddy:/etc/caddy/admin.caddy:ro
+      # The whole config DIRECTORY, not the three files inside it, and that is
+      # load-bearing (decisions.md D39). A bind mount of a single file binds the
+      # inode; `git pull` replaces files rather than editing them in place, so a
+      # file mount keeps serving the version that existed when the container was
+      # created — for as long as the container lives. `caddy reload` re-reads it
+      # and finds the same stale bytes. A directory mount resolves the path on
+      # every open, so a pulled change is visible immediately.
+      #
+      # Caddy looks for /etc/caddy/Caddyfile by default, and that file's own
+      # `import` lines resolve relative to it, so sites.caddy and admin.caddy
+      # are found without naming them here. A missing admin.caddy is not a soft
+      # failure: the import means Caddy refuses to start rather than quietly
+      # serving eight fewer names.
+      - ./caddy/conf:/etc/caddy:ro
       # The landing page. Three static files served by the proxy that is already
       # running — no separate container, and no build step to run first.
       # A bind mount read per request, so edits here are live without a restart.

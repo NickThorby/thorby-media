@@ -11,7 +11,7 @@
 # ── Only three services are routed here, and that is the whole point ──────────
 #
 # Sonarr, Radarr, Prowlarr, Bazarr, qBittorrent, SABnzbd and Cleanuparr are
-# deliberately absent. Since D34 they do have names, but in caddy/admin.caddy,
+# deliberately absent. Since D34 they do have names, but in caddy/conf/admin.caddy,
 # where every block imports the `admin_only` guard — never here. This file holds
 # what is allowed to be public if PUBLIC_HTTP is ever set true; that one holds
 # what must never be. qBittorrent runs an external program on completion and

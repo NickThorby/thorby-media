@@ -911,7 +911,7 @@ configure_firewall() {
   # tunnel-and-LAN-only box stays exactly as it was.
   #
   # Caddy serves three names here — the landing page, Jellyfin and Seerr.
-  # The eight admin apps are routed too, out of caddy/admin.caddy, but every one
+  # The eight admin apps are routed too, out of caddy/conf/admin.caddy, but every one
   # of those blocks 403s a client outside RFC1918 — so opening 80 and 443
   # exposes those three and nothing else (decisions.md D25, D34, spec §5.3).
   if [[ "${PUBLIC_HTTP:-false}" == "true" ]]; then

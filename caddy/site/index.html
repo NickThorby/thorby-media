@@ -119,7 +119,7 @@
        Rendered only for clients on the LAN or the tunnel — Caddy's
        private_only snippet sets the header, and templates evaluates this.
        That is presentation, not access control: the eight apps are unreachable
-       from the internet because every route in caddy/admin.caddy imports
+       from the internet because every route in caddy/conf/admin.caddy imports
        admin_only, which 403s any client outside RFC1918 before the proxy runs —
        not because this block is absent (decisions.md D25, D34).
 

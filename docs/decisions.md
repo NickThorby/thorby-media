@@ -4,7 +4,7 @@ The spec (`spec.md`) settles *what* gets built. This file records the choices
 made while implementing it that the spec leaves open, and the questions still
 outstanding. Add to it rather than relitigating a decision in a code comment.
 
-**Numbering, before the next merge.** `main` is at D38. The
+**Numbering, before the next merge.** `main` is at D39. The
 `books-audiobooks-and-music` branch independently claims **D37–D45**, and its
 D44 is the seerr migration that landed here as D37. That branch's nine decisions
 and their internal cross-references need renumbering before it merges — git will
@@ -1155,7 +1155,7 @@ of DNS-01; and spec §5.3's exposure model. D26 is reaffirmed, not superseded.
 
 All of them are routed through Caddy now — `sonarr.media.thorby.tech` and the
 rest,
-on real certificates, in `caddy/admin.caddy`. They were deliberately unrouted
+on real certificates, in `caddy/conf/admin.caddy`. They were deliberately unrouted
 for the whole life of this repo, so this is the entry to read before changing
 anything about exposure.
 
@@ -1451,6 +1451,61 @@ support, so `config/recyclarr/recyclarr.yml` never mentioned it.
 
 **This is conditional, not final.** If `books-audiobooks-and-music` ships,
 Lidarr ships with it.
+
+---
+
+## D39. Caddy's config is mounted as a directory, because a file mount goes stale
+
+Found during the D37/D38 deployment, and it had been latent since the repo
+existed. After `git pull` and `docker compose up -d`, Caddy was still serving a
+route to a service that had just been deleted — `lidarr.<domain>` answering 502
+rather than not existing. `caddy reload` did not fix it. The file on the host was
+correct; the file **inside the container** still had the old contents.
+
+**A bind mount of a single file binds the inode, not the path.** Compose had:
+
+```yaml
+- ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+- ./caddy/sites.caddy:/etc/caddy/sites.caddy:ro
+- ./caddy/admin.caddy:/etc/caddy/admin.caddy:ro
+```
+
+`git` does not edit files in place — it writes a new file and renames it over
+the old one, which is a new inode. The mount keeps pointing at the old one, for
+the life of the container. Every subsequent pull was invisible to Caddy, and
+`compose up -d` will not recreate a container whose *definition* has not changed
+— the file contents are not part of that definition. Only `--force-recreate`
+re-resolves it. The same trap applies to `vim`, `sed -i`, and anything else that
+writes-and-renames, which is most things.
+
+`caddy/site/` never had the problem because it was mounted as a **directory**,
+and a directory mount resolves the path on every open. That is also what hid the
+bug: the landing page updated correctly on every pull, so the mounts looked like
+they worked.
+
+The fix is to mount the directory. The three files moved to `caddy/conf/` and
+compose mounts `./caddy/conf:/etc/caddy:ro`. `caddy/Dockerfile` stays where it
+is — it is a build input, not config, and it is read by `docker build` on the
+host rather than through any mount. Caddy looks for `/etc/caddy/Caddyfile` by
+default and its `import` lines resolve relative to it, so nothing else changed.
+
+**A reload is still required, and that is a different problem.** The directory
+mount makes a pulled change *visible*; Caddy still only reads its config at
+start. Nothing in the repo would have caught the gap, so `validate.sh` now
+compares the hostnames the running Caddy serves — from its admin API on
+`localhost:2019` — against `caddy adapt` of the file on disk. It compares the
+host set rather than the whole document, because the running config carries
+defaults that `adapt` does not emit and a full comparison would fail on a stack
+that is perfectly in step. It skips when the stack is down, so this file stays
+usable before anything has started.
+
+**Why this is worth a decision rather than a fix in passing.** It is the exact
+failure shape recorded against the first deployment: something reported success
+for a thing that had not happened. The stack was healthy, every name answered,
+`validate.sh` passed against the file on disk, and the route set being served was
+a version nobody had looked at in a day. The thing that made it visible was
+checking a route that should have *stopped* existing — which only happened
+because this deployment removed one.
 
 ---
 
