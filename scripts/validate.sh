@@ -325,8 +325,16 @@ else
   # 127.0.0.1, not localhost: Caddy's admin API binds IPv4 only, and `localhost`
   # inside the container resolves to ::1 first, which is refused.
   running=$(docker compose exec -T caddy wget -qO- http://127.0.0.1:2019/config/ 2>/dev/null | hosts_of || true)
-  if [[ -z "$running" || "$running" == "[]" ]]; then
-    skip "caddy's admin API returned nothing — cannot confirm the live routes"
+  # Both sides have to be a JSON array before they can be compared or diffed.
+  # `caddy adapt` fails on a config whose environment is not set, and the admin
+  # API can be unreachable; either leaves an empty string that `--argjson` below
+  # rejects with a jq usage error, which reads as a broken check rather than an
+  # unavailable one. Say which side is missing instead.
+  is_arr() { jq -e 'type == "array"' >/dev/null 2>&1 <<<"${1:-}"; }
+  if ! is_arr "$running"; then
+    skip "caddy's admin API returned nothing usable — cannot confirm the live routes"
+  elif ! is_arr "$ondisk"; then
+    skip "caddy could not adapt its own mounted config — cannot compare"
   elif [[ "$running" == "$ondisk" ]]; then
     ok "the running caddy serves the same names as caddy/conf ($(jq 'length' <<<"$ondisk"))"
   else
@@ -336,7 +344,7 @@ else
       "only on disk: $(jq -r --argjson r "$running" '. - $r | join(" ")' <<<"$ondisk")" \
       "docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile"
   fi
-  unset -f hosts_of
+  unset -f hosts_of is_arr
 fi
 
 echo
