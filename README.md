@@ -9,13 +9,18 @@ Full requirements are in [`docs/spec.md`](docs/spec.md). This README is the
 operator's guide: how to bring it up, configure it in the right order, and grow
 it later.
 
-> **Status.** Deployed and running since 9 August 2026. `validate.sh` passes
-> 32, `audit-auth.sh` passes 43, all three hardlink runs pass, and twelve
-> production certificates are issued over DNS-01.
+> **Status.** Deployed and running since 9 August 2026. Both hardlink runs
+> pass and production certificates are issued over DNS-01 for every name.
+> `validate.sh` and `audit-auth.sh` print their own totals — read those rather
+> than a number here, which is the kind that goes stale silently.
+>
+> **Seerr replaced Jellyseerr, and Lidarr was removed** (D37, D38). The seerr
+> container runs as UID 1000, so `${CONFIG_ROOT}/jellyseerr` has to be chowned
+> before it will start.
 >
 > **The access model changed during bring-up.** There is no public door: the
 > router forwards the WireGuard port and nothing else, every name resolves to
-> the box's LAN address, and the nine admin apps are now proxied behind a
+> the box's LAN address, and the eight admin apps are now proxied behind a
 > private-only guard rather than not routed at all. Read D33, D34 and D35 in
 > [`docs/decisions.md`](docs/decisions.md) before changing anything about
 > exposure — several statements elsewhere in this file are superseded by them.
@@ -36,10 +41,10 @@ so that downloads and the library sit on one filesystem and Sonarr/Radarr import
 by hardlink instead of copying. Both download protocols land under that root
 (`torrents/` and `usenet/`, siblings of `media/`), so imports hardlink whichever
 one a release came from. Container config lives separately on the SSD
-under `/opt/mediaserver`. Caddy serves all twelve names on real certificates
+under `/opt/mediaserver`. Caddy serves all eleven names on real certificates
 obtained over DNS-01, and every one of them resolves to the box's LAN address —
 the household reaches them directly, everyone else brings up the tunnel first.
-The nine admin apps are proxied behind a guard that refuses any client outside
+The eight admin apps are proxied behind a guard that refuses any client outside
 RFC1918 (decisions.md D33, D34). The `/data` bind
 mount is deliberate indirection: adding disks later means swapping it for a
 mergerfs pool with no container changes and no library rescan.
@@ -63,7 +68,7 @@ Three records, all **DNS-only — never proxied** (grey cloud on Cloudflare).
 | Record | Points at | Purpose |
 |---|---|---|
 | `media.thorby.tech` | the box's **LAN** address | landing page (`PUBLIC_DOMAIN`) |
-| `*.media.thorby.tech` | the box's **LAN** address | every service; one wildcard covers all twelve |
+| `*.media.thorby.tech` | the box's **LAN** address | every service; one wildcard covers them all |
 | `vpn.thorby.tech` | the **WAN** address | the tunnel endpoint (`WG_HOST`) |
 
 Only the last one points at the internet. The other two resolve to a private
@@ -214,7 +219,7 @@ missing entirely, integrated graphics is disabled in BIOS — revisit §1.1.
 
 **5. Generate API keys and start the stack — on loopback first.**
 
-Set `BIND_ADDR=127.0.0.1` in `.env` before this step. Jellyfin and Jellyseerr
+Set `BIND_ADDR=127.0.0.1` in `.env` before this step. Jellyfin and Seerr
 both serve an open first-run wizard until someone completes it, and the first
 visitor to reach one becomes its administrator. On a LAN that includes every
 device on the network. Everything else in the stack now comes up already closed:
@@ -229,9 +234,9 @@ docker compose exec recyclarr recyclarr sync   # creates the quality profiles
 ```
 
 The Recyclarr sync is not optional and has to come first: `provision.sh` links
-Jellyseerr to Radarr and Sonarr by quality-profile *name*, and those profiles do
+Seerr to Radarr and Sonarr by quality-profile *name*, and those profiles do
 not exist until Recyclarr has run. Recyclarr's own schedule is `@daily`, so
-without this the first provision run skips the Jellyseerr step.
+without this the first provision run skips the Seerr step.
 
 **6. Finish the three wizards that cannot be automated,** over an SSH tunnel so
 they are never exposed:
@@ -241,9 +246,9 @@ ssh -L 8096:localhost:8096 -L 5055:localhost:5055 -L 11011:localhost:11011 \
     <user>@<host>
 ```
 
-Jellyfin first (create the admin account and the four libraries), then
-Jellyseerr — see steps 8 and 9 of the configuration sequence below. Re-run
-`./scripts/provision.sh` afterwards to wire Jellyseerr up.
+Jellyfin first (create the admin account and the three libraries), then
+Seerr — see steps 8 and 9 of the configuration sequence below. Re-run
+`./scripts/provision.sh` afterwards to wire Seerr up.
 
 Cleanuparr is the third, and it is here rather than left for later because
 step 7 will not let you past it: `audit-auth.sh` fails while its setup flow is
@@ -260,7 +265,7 @@ once you are on it.
 ```
 
 `audit-auth.sh` must pass before you widen `BIND_ADDR`. It asks each of the
-eleven apps what it actually enforces, rather than trusting that a wizard was
+ten apps what it actually enforces, rather than trusting that a wizard was
 completed. Two of them — wg-easy and Cleanuparr — have no way to pin their
 credentials from the environment, so this script is not a formality for those
 two, it is the only thing that would ever tell you.
@@ -269,7 +274,7 @@ Only then set `BIND_ADDR` to `0.0.0.0` (or the LAN IP) and
 `docker compose up -d`.
 
 **Do not skip the second half of that.** While `BIND_ADDR` is at loopback,
-every unproxied link on the landing page — the nine Manage chips and, since
+every unproxied link on the landing page — the eight Manage chips and, since
 D31, the two hero tiles — points at `ADMIN_HOST:<port>` with nothing listening
 there. The page gives no sign of it: the hero dots probe the *public* name and
 report green next to two dead buttons. `validate.sh` warns about the mismatch
@@ -310,7 +315,7 @@ The temporary admin password is printed to the container log on first start:
 - Change the credentials immediately (Settings → Web UI)
 - Leave **Run external program on torrent completion** empty — it is arbitrary
   command execution
-- Create categories `movies`, `tv`, `anime` and `music`, with save paths under
+- Create categories `movies`, `tv` and `anime`, with save paths under
   `/data/torrents/` respectively
 - Enable preallocation
 - Put incomplete downloads in a subfolder of the *same* path — never a different
@@ -331,14 +336,14 @@ add indexers directly in Sonarr or Radarr; Prowlarr owns them.
 
 ### 3. Prowlarr → apps
 
-Settings → Apps, add Sonarr, Radarr and Lidarr with their API keys. From this
+Settings → Apps, add Sonarr and Radarr with their API keys. From this
 point indexers sync automatically and are never configured in the *arr apps
 directly.
 
-### 4. Sonarr, Radarr and Lidarr → download clients
+### 4. Sonarr and Radarr → download clients
 
 Add **both** clients in each app, with the category names from step 1 (`tv` and
-`anime` in Sonarr, `movies` in Radarr, `music` in Lidarr):
+`anime` in Sonarr, `movies` in Radarr):
 
 - **SABnzbd** at priority **1** — Usenet is preferred where both have a release
 - **qBittorrent** at priority **2**
@@ -353,12 +358,6 @@ practice Usenet carries TV and film while torrents carry anime.
 
 - Sonarr: `/data/media/tv` **and** `/data/media/anime`
 - Radarr: `/data/media/movies`
-- Lidarr: `/data/media/music`
-
-Lidarr is fussier than the other two here: its root folder requires a default
-quality **and** metadata profile, and the API rejects the create without both.
-`provision.sh` looks up whichever exist rather than assuming ids, but if it ran
-before Lidarr finished its first start it will say so and skip — re-run it.
 
 ### 6. Verify hardlinking — do not skip
 
@@ -377,7 +376,7 @@ importing anything else. Full procedure in
 ### 7. Bazarr — `:6767`
 
 Connect to Sonarr and Radarr, then configure subtitle providers and languages.
-It has nothing to do with Lidarr — subtitles are not a music problem.
+Subtitles are the whole of its job; it touches nothing else.
 
 ### 7a. Cleanuparr — `:11011`
 
@@ -390,7 +389,7 @@ close here (decisions.md D30).
 - Settings → General → Authentication: leave **Disable Auth for Local Addresses
   off**. Its trusted ranges include `172.16.0.0/12`, which is the Docker bridge,
   so it exempts every container in this stack rather than just the LAN.
-- Add qBittorrent at `http://qbittorrent:8080` and the four *arr apps.
+- Add qBittorrent at `http://qbittorrent:8080` and the three *arr apps.
 - Leave the **Download Cleaner** and **Unlinked Download** handling disabled to
   begin with. Cleanuparr has write access to `/data`, and the media library is
   not in the backup set. Turn them on one at a time once you have watched the
@@ -402,9 +401,8 @@ priority-1 client, the queue carrying most TV and film is not covered by it.
 
 ### 8. Jellyfin — `:8096`
 
-Create four libraries: `/data/media/movies`, `/data/media/tv`,
-`/data/media/anime` as its own library, and `/data/media/music`. Then
-Dashboard → Playback:
+Create three libraries: `/data/media/movies`, `/data/media/tv`, and
+`/data/media/anime` as its own library. Then Dashboard → Playback:
 
 - Hardware acceleration: **VAAPI**
 - Device: `/dev/dri/renderD128`
@@ -425,9 +423,13 @@ fail2ban `jellyfin` jail becomes safe to enable — `setup.sh` ships it
 **disabled** precisely because a jail fed proxy addresses bans the proxy and
 takes everyone offline at once.
 
-### 9. Jellyseerr — `:5055`
+### 9. Seerr — `:5055`
 
-The front door for everyone who is not you. **Do step 8 first** — the wizard asks
+The front door for everyone who is not you. The image is `ghcr.io/seerr-team/seerr`; the
+service, container and config directory are still called `jellyseerr`, because
+renaming the directory on the box is how you end up with a fresh instance and an
+open setup wizard (decisions.md D37).
+ **Do step 8 first** — the wizard asks
 you to select Jellyfin libraries and offers nothing if none exist, which looks
 like a broken Continue button.
 
@@ -435,12 +437,10 @@ Run the wizard once at `http://localhost:5055/setup`:
 
 - Sign in with your **Jellyfin admin account**
 - For the server address, enter the hostname **`jellyfin`** and port **8096** —
-  not `localhost` (that is Jellyseerr itself) and not the full URL (some fields
+  not `localhost` (that is Seerr itself) and not the full URL (some fields
   reject it with `INVALID_URL`). Leave **URL Base blank**; it is only for apps
   served under a subpath.
-- Select the libraries. Music is optional here and does nothing: Jellyseerr is a
-  film and TV product and cannot request from Lidarr, so music has no
-  household-facing request path at all. Adding an artist stays your job.
+- Select the libraries.
 - **Stop there** — skip the Radarr and Sonarr steps
 
 Then `./scripts/provision.sh` connects Radarr and Sonarr with the right root
@@ -456,10 +456,10 @@ Request, and it appears.
 landing page — Watch and Request — and those two are the only things anyone else
 needs. No VPN, no app, no port to remember.
 
-The *Manage* section, with the nine admin tools, renders **only for clients on
+The *Manage* section, with the eight admin tools, renders **only for clients on
 the LAN or the tunnel**. That is a courtesy, not a control: those apps are
-unreachable from the internet because they have no route in `caddy/sites.caddy`
-and no DNS record, not because a link is hidden.
+unreachable from the internet because every route in `caddy/admin.caddy` refuses
+a client outside RFC1918, not because a link is hidden.
 
 The same LAN-or-tunnel test decides where the two public tiles point. Inside the
 house they go straight to `http://<lan-ip>:8096` and `:5055` rather than out to
@@ -583,7 +583,7 @@ alerting path that has never been tested is not an alerting path.
   so there is no reachable HTTP surface from the internet at all
 - Every name resolves to the box's LAN address, so the records are useless to
   anyone who looks them up from outside
-- The nine admin apps *are* routed now, and `admin_only` is what keeps them
+- The eight admin apps *are* routed now, and `admin_only` is what keeps them
   private — one snippet where there used to be three independent mechanisms
   (D34). `validate.sh` asserts no block can exist without it. **If you ever set
   `PUBLIC_HTTP=true`, that snippet is all that stands between the internet and

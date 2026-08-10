@@ -11,7 +11,7 @@
 #
 # ── What changed, and what it cost ───────────────────────────────────────────
 #
-# Until D33 these nine had no route at all, and that absence *was* the security
+# Until D33 these eight had no route at all, and that absence *was* the security
 # control — three mechanisms deep: no route, no DNS record, no path through
 # DOCKER-USER. D33 closed the public door entirely, which makes a route here
 # unreachable from the internet for as long as it stays closed.
@@ -61,11 +61,6 @@ sonarr.{$PUBLIC_DOMAIN} {
 radarr.{$PUBLIC_DOMAIN} {
 	import admin_only
 	reverse_proxy radarr:7878
-}
-
-lidarr.{$PUBLIC_DOMAIN} {
-	import admin_only
-	reverse_proxy lidarr:8686
 }
 
 prowlarr.{$PUBLIC_DOMAIN} {

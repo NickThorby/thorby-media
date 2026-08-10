@@ -14,10 +14,10 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # Services that touch media and therefore must share /data. Prowlarr brokers
-# indexers, Recyclarr and Jellyseerr talk to APIs, Caddy proxies — none need the
+# indexers, Recyclarr and Seerr talk to APIs, Caddy proxies — none need the
 # media tree. Cleanuparr does: its unlinked-download cleaner counts hardlinks on
 # the files themselves, which it cannot do through an API (decisions.md D30).
-MEDIA_SERVICES='["bazarr","cleanuparr","jellyfin","lidarr","qbittorrent","radarr","sabnzbd","sonarr"]'
+MEDIA_SERVICES='["bazarr","cleanuparr","jellyfin","qbittorrent","radarr","sabnzbd","sonarr"]'
 
 pass=0 fail=0
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; pass=$((pass + 1)); }
@@ -86,7 +86,7 @@ else
   bad "gluetun is active — confirm a provider with port forwarding was chosen"
 fi
 
-# The remote-access door. Absent, and the nine admin apps are LAN-only with no
+# The remote-access door. Absent, and the eight admin apps are LAN-only with no
 # way in from outside — which fails quietly, since the stack is otherwise fine.
 if jq -e '.services | has("wg-easy")' <<<"$rendered" >/dev/null; then
   ok "wg-easy is present"
@@ -224,7 +224,7 @@ esac
 # The *arr auth settings are the difference between a login prompt and an
 # anonymous admin session, and deleting them looks like tidying up. Verified:
 # with AUTH__REQUIRED unset to DisabledForLocalAddresses, GET / returns 200.
-for svc in sonarr radarr lidarr prowlarr; do
+for svc in sonarr radarr prowlarr; do
   prefix=$(tr '[:lower:]' '[:upper:]' <<<"$svc")
   if jq -e --arg m "${prefix}__AUTH__METHOD" --arg r "${prefix}__AUTH__REQUIRED" --arg s "$svc" \
        '.services[$s].environment | has($m) and has($r)' <<<"$rendered" >/dev/null; then
@@ -324,7 +324,7 @@ fi
 # Cleanuparr is on this list for the same reason at one remove: it holds a
 # qBittorrent credential and every *arr API key, so a session on it reaches the
 # same command execution by proxy (decisions.md D30).
-if out=$(grep -nEi 'sonarr|radarr|lidarr|prowlarr|bazarr|qbittorrent|sabnzbd|cleanuparr|\bqbit\b|\bsab\b' caddy/sites.caddy \
+if out=$(grep -nEi 'sonarr|radarr|prowlarr|bazarr|qbittorrent|sabnzbd|cleanuparr|\bqbit\b|\bsab\b' caddy/sites.caddy \
          | grep -vE '^[0-9]+:\s*#'); then
   bad "an admin service appears in caddy/sites.caddy — it must not be routed there"
   indent <<<"$out"

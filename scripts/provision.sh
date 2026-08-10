@@ -19,8 +19,8 @@
 #   - Private tracker indexers. They need per-site credentials. The public ones
 #     in TORRENT_INDEXERS are added automatically; add private ones in Prowlarr.
 #   - Jellyfin libraries. No API key exists until someone signs in, and the
-#     libraries have to exist before Jellyseerr's wizard can offer them.
-#   - Jellyseerr's first-run wizard. Its settings endpoints return 403 until an
+#     libraries have to exist before Seerr's wizard can offer them.
+#   - Seerr's first-run wizard. Its settings endpoints return 403 until an
 #     admin session exists, and the API key alone will not do. This script
 #     detects that state and prints the steps rather than pretending.
 #   - Quality profiles. That is Recyclarr's job, declaratively.
@@ -68,7 +68,7 @@ if [[ "${1:-}" == "--init-keys" ]]; then
   }
 
   added=0
-  for var in SONARR_API_KEY RADARR_API_KEY LIDARR_API_KEY PROWLARR_API_KEY; do
+  for var in SONARR_API_KEY RADARR_API_KEY PROWLARR_API_KEY; do
     set_key "$var" "$(openssl rand -hex 16)" && added=1
   done
   # Cleanuparr is absent from both loops on purpose. It has no environment
@@ -111,7 +111,7 @@ set -a
 source ./.env
 set +a
 
-for var in SONARR_API_KEY RADARR_API_KEY LIDARR_API_KEY PROWLARR_API_KEY QBIT_PASS ARR_PASS; do
+for var in SONARR_API_KEY RADARR_API_KEY PROWLARR_API_KEY QBIT_PASS ARR_PASS; do
   [[ -n "${!var:-}" ]] || die "$var is not set in .env. Run: ./scripts/provision.sh --init-keys"
 done
 
@@ -128,7 +128,6 @@ QBIT_HOST=${QBIT_HOST:-qbittorrent}
 SAB_HOST=${SAB_HOST:-sabnzbd}
 SONARR_URL="http://127.0.0.1:${SONARR_PORT:-8989}"
 RADARR_URL="http://127.0.0.1:${RADARR_PORT:-7878}"
-LIDARR_URL="http://127.0.0.1:${LIDARR_PORT:-8686}"
 PROWLARR_URL="http://127.0.0.1:${PROWLARR_PORT:-9696}"
 
 # ─── HTTP helpers ────────────────────────────────────────────────────────────
@@ -244,15 +243,17 @@ provision_qbittorrent() {
   ok "preferences set (login '${QBIT_USER}', save paths, preallocation, host-header validation off)"
 
   # Categories map to save paths under /data/torrents/ (spec §6 step 1). This
-  # list has to match the category names the *arrs are given further down —
-  # Lidarr asks for 'music' — because qBittorrent accepts an unregistered
-  # category on an incoming torrent and creates it with no save path. The
-  # download then lands in the default /data/torrents rather than its own
-  # subdirectory, imports still hardlink because it is the same filesystem, and
-  # nothing anywhere reports a problem (decisions.md D29).
+  # list has to match the category names the *arrs are given further down,
+  # because qBittorrent accepts an unregistered category on an incoming torrent
+  # and creates it with no save path. The download then lands in the default
+  # /data/torrents rather than its own subdirectory, imports still hardlink
+  # because it is the same filesystem, and nothing anywhere reports a problem.
+  #
+  # 'music' was here for Lidarr and left with it (decisions.md D38). Anything
+  # already created on the client is not removed — this loop only adds.
   local existing cat
   existing=$(qbt http://localhost:8080/api/v2/torrents/categories)
-  for cat in movies tv anime music; do
+  for cat in movies tv anime; do
     if jq -e --arg c "$cat" 'has($c)' <<<"$existing" >/dev/null 2>&1; then
       skip "category '$cat' exists"
     else
@@ -313,14 +314,14 @@ provision_sabnzbd() {
   ok "paths -> /data/usenet/{incomplete,complete}"
 
   # Same list as qBittorrent's above, and for the same reason: a category the
-  # *arrs name but SABnzbd does not define falls back to the default, so music
-  # would complete into /data/usenet/complete instead of complete/music.
+  # *arrs name but SABnzbd does not define falls back to the default, so anime
+  # would complete into /data/usenet/complete instead of complete/anime.
   local c
-  for c in movies tv anime music; do
+  for c in movies tv anime; do
     sab -d mode=set_config -d section=categories -d keyword="$c" \
         --data-urlencode "dir=$c" >/dev/null
   done
-  ok "categories movies, tv, anime, music"
+  ok "categories movies, tv, anime"
 
   # The provider is what actually holds the articles; the indexers only say
   # where they are. Without one, SABnzbd finds everything and downloads nothing.
@@ -426,10 +427,10 @@ provision_bazarr() {
   fi
 }
 
-# ─── Jellyseerr ──────────────────────────────────────────────────────────────
+# ─── Seerr ───────────────────────────────────────────────────────────────────
 
 provision_jellyseerr() {
-  step "Jellyseerr"
+  step "Seerr"
 
   docker compose ps --status running --services | grep -qx jellyseerr || {
     warn "jellyseerr is not running, skipping"; return 0
@@ -441,10 +442,10 @@ provision_jellyseerr() {
     | jq -r '.initialized // false')
 
   if [[ "$initialized" != "true" ]]; then
-    # Jellyseerr gates its settings endpoints behind an admin session that only
+    # Seerr gates its settings endpoints behind an admin session that only
     # exists after the wizard, and the API key alone returns 403. So the first
     # run genuinely cannot be automated — say so rather than pretend.
-    warn "Jellyseerr setup is not finished; nothing to configure yet."
+    warn "Seerr setup is not finished; nothing to configure yet."
     warn ""
     warn "  Jellyfin needs libraries BEFORE this will work — the wizard asks you"
     warn "  to select them, and offers nothing if none exist."
@@ -453,7 +454,7 @@ provision_jellyseerr() {
     warn "       Movies      -> /data/media/movies"
     warn "       Shows       -> /data/media/tv"
     warn "       Anime       -> /data/media/anime   (also type Shows)"
-    warn "  2. Jellyseerr > http://localhost:${SEERR_PORT:-5055}/setup"
+    warn "  2. Seerr > http://localhost:${SEERR_PORT:-5055}/setup"
     warn "       sign in with your Jellyfin admin account, select the libraries"
     warn "  3. Re-run this script to wire up Radarr and Sonarr"
     return 0
@@ -463,7 +464,7 @@ provision_jellyseerr() {
   local skey seerr
   skey=$(docker compose exec -T jellyseerr \
     sh -c 'cat /app/config/settings.json' | jq -r '.main.apiKey')
-  [[ -n "$skey" && "$skey" != "null" ]] || { warn "could not read Jellyseerr's API key"; return 0; }
+  [[ -n "$skey" && "$skey" != "null" ]] || { warn "could not read Seerr's API key"; return 0; }
   seerr="http://127.0.0.1:${SEERR_PORT:-5055}"
 
   # jseerr <method> <path> [body]
@@ -476,11 +477,11 @@ provision_jellyseerr() {
     fi
   }
 
-  # Jellyseerr sits behind Caddy at seerr.<domain>, so without this every request
+  # Seerr sits behind Caddy at seerr.<domain>, so without this every request
   # it logs — and every request it rate-limits — carries Caddy's container
   # address instead of the client's. It is the same problem Jellyfin has, and the
   # reason setup.sh ships the fail2ban jellyfin jail disabled: a ban list built
-  # from proxy addresses bans the proxy. Jellyseerr can be told over the API;
+  # from proxy addresses bans the proxy. Seerr can be told over the API;
   # Jellyfin's KnownProxies cannot, and stays a manual post-wizard step (README).
   #
   # Idempotent — reads the current value and only writes when it differs. The
@@ -554,7 +555,7 @@ provision_jellyseerr() {
       ok "Sonarr connection updated with the current API key"
     fi
   else
-    # Jellyseerr keeps a separate anime profile and directory, which is what
+    # Seerr keeps a separate anime profile and directory, which is what
     # routes anime requests to /data/media/anime instead of the TV library.
     #
     # activeLanguageProfileId must be a NUMBER even though Sonarr v4 removed
@@ -616,9 +617,15 @@ add_indexer() {
 
 # add_root_folder <app> <url> <key> <path> [api-version]
 #
-# The version defaults to v3 so the Sonarr and Radarr calls read as they always
-# did. Lidarr is v1 — a wrong version 404s immediately rather than doing
-# something subtle, which is why a default is safe here.
+# The version defaults to v3, which is what every current caller wants. It is a
+# parameter because the *arr family is not all v3, and a wrong version 404s
+# immediately rather than doing something subtle — which is why a default is
+# safe here.
+#
+# Nothing passes v1 today. It is kept rather than inlined because D38 removed
+# Lidarr, not the shape: the books-and-music branch calls this with v1 for
+# Chaptarr, which answers Readarr's API. Deleting the parameter would let that
+# merge cleanly and then silently ignore the argument (decisions.md D38).
 add_root_folder() {
   local app=$1 url=$2 key=$3 path=$4 ver=${5:-v3}
   if arr GET "$url" "$key" "/api/$ver/rootfolder" | jq -e --arg p "$path" 'any(.[]; .path == $p)' >/dev/null; then
@@ -628,8 +635,8 @@ add_root_folder() {
 
   local body="{\"path\":\"$path\"}"
 
-  # Lidarr validates three more fields than Sonarr and Radarr do: a name, and a
-  # default quality *and* metadata profile, both of which must reference rows
+  # The v1 apps validate three more fields than Sonarr and Radarr do: a name, and
+  # a default quality *and* metadata profile, both of which must reference rows
   # that exist. Neither id is stable — they depend on the order the profiles were
   # created in — so look them up rather than assuming 1.
   if [[ "$ver" == "v1" ]]; then
@@ -660,7 +667,8 @@ add_root_folder() {
 # that is where the releases actually are.
 #
 # The version trails the existing arguments so Sonarr and Radarr's calls are
-# unchanged; only Lidarr passes v1.
+# unchanged. Nothing passes v1 today — see the note on add_root_folder for why
+# the parameter stays.
 upsert_download_client() {
   local app=$1 url=$2 key=$3 name=$4 impl=$5 contract=$6 proto=$7 prio=$8 fields=$9 desc=${10} ver=${11:-v3}
   local existing
@@ -672,11 +680,11 @@ upsert_download_client() {
     #
     # The credentials cannot be compared to decide whether a write is needed:
     # every *arr returns the password masked, so a rotated QBIT_PASS looks
-    # exactly like an unchanged one. Skipping meant Sonarr, Radarr and Lidarr
-    # each kept the password they were created with, and the only symptom was
-    # every grab failing with "Unable to connect to qBittorrent" while this
-    # script printed three green lines. Same shape as the stale API keys in
-    # review-2026-08 S11, in the one place that fix did not reach.
+    # exactly like an unchanged one. Skipping meant every *arr kept the password
+    # it was created with, and the only symptom was every grab failing with
+    # "Unable to connect to qBittorrent" while this script printed a green line
+    # for each. Same shape as the stale API keys in review-2026-08 S11, in the
+    # one place that fix did not reach.
     #
     # Fields the *arr knows about and we do not are left alone; ours win where
     # the names collide.
@@ -761,8 +769,8 @@ ensure_arr_auth() {
 
 # ensure_hardlinks <app> <url> <key> [api-version]
 #
-# Lidarr spells the field the same way Sonarr and Radarr do, so only the path
-# version differs.
+# Every *arr spells the field the same way, so only the path version differs.
+# Nothing passes v1 today — see the note on add_root_folder for why it stays.
 ensure_hardlinks() {
   local app=$1 url=$2 key=$3 ver=${4:-v3} current updated
   current=$(arr GET "$url" "$key" "/api/$ver/config/mediamanagement")
@@ -826,7 +834,6 @@ add_prowlarr_app() {
 step "Waiting for services"
 wait_for Sonarr   "$SONARR_URL/api/v3/system/status"   "$SONARR_API_KEY";   ok "Sonarr ready"
 wait_for Radarr   "$RADARR_URL/api/v3/system/status"   "$RADARR_API_KEY";   ok "Radarr ready"
-wait_for Lidarr   "$LIDARR_URL/api/v1/system/status"   "$LIDARR_API_KEY";   ok "Lidarr ready"
 wait_for Prowlarr "$PROWLARR_URL/api/v1/system/status" "$PROWLARR_API_KEY"; ok "Prowlarr ready"
 
 # Close the *arr UIs first. Everything below this point is configuration; this
@@ -834,7 +841,6 @@ wait_for Prowlarr "$PROWLARR_URL/api/v1/system/status" "$PROWLARR_API_KEY"; ok "
 step "Logins"
 ensure_arr_auth Sonarr   "$SONARR_URL"   "$SONARR_API_KEY"   v3
 ensure_arr_auth Radarr   "$RADARR_URL"   "$RADARR_API_KEY"   v3
-ensure_arr_auth Lidarr   "$LIDARR_URL"   "$LIDARR_API_KEY"   v1
 ensure_arr_auth Prowlarr "$PROWLARR_URL" "$PROWLARR_API_KEY" v1
 
 provision_qbittorrent
@@ -862,21 +868,9 @@ upsert_download_client Radarr "$RADARR_URL" "$RADARR_API_KEY" \
   qBittorrent QBittorrent QBittorrentSettings torrent 2 "$(qbit_fields movieCategory movies)" "qbittorrent:8080, category 'movies'"
 ensure_hardlinks Radarr "$RADARR_URL" "$RADARR_API_KEY"
 
-# Lidarr is v1 throughout, and its category field is musicCategory rather than
-# tvCategory/movieCategory. Same priority ordering as the other two: Usenet
-# first, torrents as the fallback.
-step "Lidarr"
-add_root_folder Lidarr "$LIDARR_URL" "$LIDARR_API_KEY" /data/media/music v1
-upsert_download_client Lidarr "$LIDARR_URL" "$LIDARR_API_KEY" \
-  SABnzbd Sabnzbd SabnzbdSettings usenet 1 "$(sab_fields musicCategory music)" "sabnzbd:8080, category 'music'" v1
-upsert_download_client Lidarr "$LIDARR_URL" "$LIDARR_API_KEY" \
-  qBittorrent QBittorrent QBittorrentSettings torrent 2 "$(qbit_fields musicCategory music)" "qbittorrent:8080, category 'music'" v1
-ensure_hardlinks Lidarr "$LIDARR_URL" "$LIDARR_API_KEY" v1
-
 step "Prowlarr"
 add_prowlarr_app Sonarr Sonarr SonarrSettings "http://sonarr:8989" "$SONARR_API_KEY"
 add_prowlarr_app Radarr Radarr RadarrSettings "http://radarr:7878" "$RADARR_API_KEY"
-add_prowlarr_app Lidarr Lidarr LidarrSettings "http://lidarr:8686" "$LIDARR_API_KEY"
 # Usenet indexers are private and useless without a key, so skip them until
 # one is supplied rather than creating a broken entry.
 for pair in "NZBgeek:${NZBGEEK_API_KEY:-}" "NzbPlanet:${NZBPLANET_API_KEY:-}"; do
@@ -920,9 +914,9 @@ printf '  %s\n' \
   "Prowlarr: the public torrent indexers are already added. Add any private" \
   "          trackers by hand — they need per-site credentials." \
   "Bazarr:   connect to Sonarr and Radarr, choose subtitle providers." \
-  "Jellyfin: create four libraries — /data/media/{movies,tv,anime,music}," \
+  "Jellyfin: create three libraries — /data/media/{movies,tv,anime}," \
   "          anime as its own library, and enable VAAPI on the target." \
-  "Recyclarr: docker compose exec recyclarr recyclarr sync (no Lidarr support)" \
+  "Recyclarr: docker compose exec recyclarr recyclarr sync" \
   "" \
   "Cleanuparr: nothing here could configure it — it has no environment" \
   "          variable for its credentials or its API key, so both are created" \
@@ -931,7 +925,7 @@ printf '  %s\n' \
   "            1. Create the admin account. That closes the setup wizard." \
   "            2. Leave 'Disable Auth for Local Addresses' OFF — its trusted" \
   "               ranges include 172.16.0.0/12, the Docker bridge." \
-  "            3. Add qBittorrent at http://${QBIT_HOST}:8080 and the four *arrs." \
+  "            3. Add qBittorrent at http://${QBIT_HOST}:8080 and the three *arrs." \
   "            4. Leave the destructive cleaners disabled until you have" \
   "               watched it run — it has write access to /data."
 echo

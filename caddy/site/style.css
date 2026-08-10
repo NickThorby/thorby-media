@@ -37,7 +37,8 @@
      because Bazarr genuinely has no brand colour — its logo is black and white
      only — so this is not an omission to be helpfully corrected later.
      These are decorative: plate tints, glows, dot rings. Never text, and never
-     a border that carries meaning; #ffc230 and #00ccff both fail contrast. */
+     a border that carries meaning; #ffc230 and #00ccff both fail contrast.
+
      Cleanuparr's is the one value here not lifted from a logo: its brand purple
      is #430074, which is too dark to tint a plate that is already near-black,
      so this is the same hue lightened until the tint reads. */
@@ -45,7 +46,6 @@
   --b-seerr:      #8d61eb;
   --b-sonarr:     #00ccff;
   --b-radarr:     #ffc230;
-  --b-lidarr:     #009252;
   --b-prowlarr:   #e66001;
   --b-bazarr:     #c9cfdb;
   --b-sab:        #ffb300;
@@ -266,7 +266,6 @@ a { touch-action: manipulation; }
 [data-sub="seerr"]      { --brand: var(--b-seerr); }
 [data-sub="sonarr"]     { --brand: var(--b-sonarr); }
 [data-sub="radarr"]     { --brand: var(--b-radarr); }
-[data-sub="lidarr"]     { --brand: var(--b-lidarr); }
 [data-sub="prowlarr"]   { --brand: var(--b-prowlarr); }
 [data-sub="bazarr"]     { --brand: var(--b-bazarr); }
 [data-sub="sab"]        { --brand: var(--b-sab);      --icon-scale: 1.05; }
@@ -402,10 +401,21 @@ a { touch-action: manipulation; }
 
 .admin {
   display: grid;
-  /* 13rem lands on three columns at the 48rem shell, so nine tools fill three
-     even rows. Narrower tracks give four-then-four-then-one, which reads as a
-     mistake. Keep the tool count a multiple of three or accept a short row. */
-  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  /* Explicit column counts, not auto-fit, and that is the whole point.
+     There are eight tools, so the only counts that fill even rows are 4, 2
+     and 1 — `repeat(auto-fit, minmax(...))` will happily choose 3 in the band
+     where three tracks fit and four do not, which gives three-then-three-then-
+     two. An orphaned pair reads as a mistake; it is what nine tools in three
+     columns avoided by accident, and eight has to avoid on purpose.
+
+     Four columns hold their labels down to a ~178px track, measured, which the
+     48rem shell reaches at about a 768px viewport — hence that breakpoint
+     below rather than a round number. Narrower than that and `Remote access`
+     starts ellipsing, which is the quiet failure: `text-overflow` truncates
+     without breaking the layout, so nothing looks wrong.
+
+     If the tool count changes, change these three rules with it. */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--s-2);
   padding-top: var(--s-3);
 }
@@ -500,7 +510,7 @@ a { touch-action: manipulation; }
 
 /* One line per chip. An unenumerated chip falls through to delay 0 and arrives
    ahead of the ones above it, which reads as a stutter rather than a stagger —
-   chips seven, eight and nine were doing exactly that. */
+   chips seven and eight were doing exactly that. */
 .admin .chip { animation: rise var(--dur-2) var(--ease) backwards; }
 .admin .chip:nth-child(1) { animation-delay: .02s; }
 .admin .chip:nth-child(2) { animation-delay: .05s; }
@@ -510,7 +520,6 @@ a { touch-action: manipulation; }
 .admin .chip:nth-child(6) { animation-delay: .17s; }
 .admin .chip:nth-child(7) { animation-delay: .20s; }
 .admin .chip:nth-child(8) { animation-delay: .23s; }
-.admin .chip:nth-child(9) { animation-delay: .26s; }
 
 /* Anyone who has asked their OS to stop animating things means it. Transitions
    for feedback stay, but nothing moves on its own. */
@@ -524,6 +533,14 @@ a { touch-action: manipulation; }
 
 /* ── Narrow screens ─────────────────────────────────────────────────────── */
 
+/* Four columns to two, skipping three. See the note on .admin: three columns
+   is the one count that cannot fill even rows with eight chips. The threshold
+   is where a four-column track falls under ~178px and the longest description
+   starts to ellipse. */
+@media (max-width: 48rem) {
+  .admin { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 @media (max-width: 30rem) {
   .tile {
     grid-template-columns: auto 1fr auto;
@@ -531,10 +548,9 @@ a { touch-action: manipulation; }
   }
   /* The whole row is the target on a phone; the affordance is redundant. */
   .tile__arrow { display: none; }
-  .admin { grid-template-columns: 1fr 1fr; }
 }
 
 /* Two chip columns stop fitting a name and a dot somewhere around here. */
-@media (max-width: 22rem) {
-  .admin { grid-template-columns: 1fr; }
+@media (max-width: 26rem) {
+  .admin { grid-template-columns: minmax(0, 1fr); }
 }

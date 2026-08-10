@@ -51,7 +51,6 @@ BACKUP_KEEP=${BACKUP_KEEP:-7}
 # it on. Triggering these is strictly better than copying their database files.
 ARR_APPS="sonarr:v3:${SONARR_PORT:-8989}:${SONARR_API_KEY:-}
 radarr:v3:${RADARR_PORT:-7878}:${RADARR_API_KEY:-}
-lidarr:v1:${LIDARR_PORT:-8686}:${LIDARR_API_KEY:-}
 prowlarr:v1:${PROWLARR_PORT:-9696}:${PROWLARR_API_KEY:-}"
 
 if [[ "${1:-}" == "--list" ]]; then

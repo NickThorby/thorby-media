@@ -81,8 +81,8 @@
 
   probeGroup(document.querySelector('.tiles'));
 
-  // The nine admin tools are only probed once someone opens the drawer, which
-  // saves nine requests on the household visits that never do. `once` because
+  // The admin tools are only probed once someone opens the drawer, which saves
+  // a request per chip on the household visits that never do. `once` because
   // toggle fires on close as well as open, and one round of results is enough.
   //
   // Still guarded on the drawer existing: it is templated out entirely for
@@ -91,11 +91,11 @@
   // look broken.
   //
   // There was a second guard here that skipped the probe whenever the page was
-  // served over https, and hid the dots rather than leave nine greys that meant
-  // nothing. It was right at the time: the chips pointed at
+  // served over https, and hid the dots rather than leave a row of greys that
+  // meant nothing. It was right at the time: the chips pointed at
   // http://<lan-ip>:<port>, and a fetch from an https: origin to an http: URL
-  // is blocked as active mixed content whatever `mode: 'no-cors'` says, so all
-  // nine would have rejected. D34 put the admin apps behind Caddy on real
+  // is blocked as active mixed content whatever `mode: 'no-cors'` says, so
+  // every one would have rejected. D34 put the admin apps behind Caddy on real
   // certificates, so every chip is https now and the wall is gone. These dots
   // work for the first time since D24 recorded them as unfixable.
   const manage = document.querySelector('.manage');

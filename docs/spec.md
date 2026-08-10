@@ -1,7 +1,7 @@
 # Media Server Build Specification
 
 A self-hosted media server for a home network, serving a personal library of
-TV, film, anime and music to Apple TV via Infuse, with automated acquisition and
+TV, film and anime to Apple TV via Infuse, with automated acquisition and
 management.
 
 ---
@@ -119,20 +119,17 @@ a mount-point change rather than a migration.
 ├── torrents/
 │   ├── movies/
 │   ├── tv/
-│   ├── anime/
-│   └── music/
+│   └── anime/
 ├── usenet/
 │   ├── incomplete/
 │   └── complete/
 │       ├── movies/
 │       ├── tv/
-│       ├── anime/
-│       └── music/
+│       └── anime/
 └── media/
     ├── movies/
     ├── tv/
-    ├── anime/
-    └── music/
+    └── anime/
 ```
 
 `usenet/` is a sibling of `torrents/` and `media/` for the same reason they are
@@ -238,11 +235,10 @@ All services run as Docker containers, orchestrated by a single
 | Service | Image | Port | Purpose |
 |---|---|---|---|
 | Jellyfin | `lscr.io/linuxserver/jellyfin` | 8096 | Media server, Infuse source |
-| Jellyseerr | `fallenbagel/jellyseerr` | 5055 | Requests — the household front door |
+| Seerr | `ghcr.io/seerr-team/seerr` | 5055 | Requests — the household front door |
 | Prowlarr | `lscr.io/linuxserver/prowlarr` | 9696 | Indexer manager |
 | Sonarr | `lscr.io/linuxserver/sonarr` | 8989 | TV and anime |
 | Radarr | `lscr.io/linuxserver/radarr` | 7878 | Films |
-| Lidarr | `lscr.io/linuxserver/lidarr` | 8686 | Music — API is v1, not v3 |
 | Bazarr | `lscr.io/linuxserver/bazarr` | 6767 | Subtitles |
 | qBittorrent | `lscr.io/linuxserver/qbittorrent` | 8080 | Torrent download client |
 | SABnzbd | `lscr.io/linuxserver/sabnzbd` | 8085 | Usenet download client |
@@ -261,12 +257,8 @@ from different companies: a **provider** (the news server holding the articles)
 and an **indexer** (the catalogue that hands over an `.nzb`). Indexers alone
 download nothing. See decisions.md D14.
 
-Two asymmetries in that table are deliberate and worth stating rather than
-rediscovering. **Lidarr has no request path**: Jellyseerr is a film and TV
-product and cannot request music, so unlike Sonarr and Radarr nothing in front
-of it is household-facing — adding an artist is an administrator's job. Recyclarr
-has no Lidarr support either, so its quality profiles are set by hand.
-**Cleanuparr cleans qBittorrent only**: it has no SABnzbd support, and since
+One asymmetry in that table is deliberate and worth stating rather than
+rediscovering. **Cleanuparr cleans qBittorrent only**: it has no SABnzbd support, and since
 SABnzbd holds download-client priority 1 the queue carrying most TV and film is
 not covered by it. Both are accepted; see decisions.md D29 and D30.
 
@@ -345,26 +337,31 @@ case is a leaked library, the rest have a worst case of a shell — still shapes
 
 ### 5.2 Caddy
 
-Caddy serves **three names and no more**, on the LAN address the router forwards
-to. Certificates come from Let's Encrypt over HTTP-01, which requires both 80
-and 443 to be forwarded.
+Caddy serves eleven names, split across **two files**, and which file a name
+lives in is the answer to "could this be reached from the internet". Certificates
+come from Let's Encrypt over **DNS-01** against the Cloudflare zone — see §5.1;
+there is no inbound path for an HTTP-01 challenge.
 
-Reverse proxy targets:
+`caddy/sites.caddy` — the three names that are allowed to be public, and the only
+ones served if `PUBLIC_HTTP` is ever set true:
 
 - `media.thorby.tech` -> the landing page (static, served by Caddy itself)
 - `jellyfin.media.thorby.tech` -> `jellyfin:8096`
-- `seerr.media.thorby.tech` -> `jellyseerr:5055`
+- `seerr.media.thorby.tech` -> `jellyseerr:5055` (the container kept its old
+  name through the seerr rename — decisions.md D37)
 
-Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, qBittorrent, SABnzbd and Cleanuparr
-have **no route here and no DNS record**. That is the mechanism enforcing §5.3 —
-not a firewall rule that could be edited, not a password that could be weak, but
-the absence of any path from the internet to them. `scripts/validate.sh` fails if
-one of those eight names appears in `caddy/sites.caddy` at all.
+`caddy/admin.caddy` — the eight that must never be. Sonarr, Radarr, Prowlarr,
+Bazarr, qBittorrent (`qbit.`), SABnzbd (`sab.`), Cleanuparr and the wg-easy UI
+(`wg.`). Every block imports the `admin_only` snippet, which returns 403 to any
+client outside RFC1918 before the proxy runs, and `scripts/validate.sh` fails if
+a block in that file does not import it. It also still fails if one of those
+seven container names appears in `sites.caddy` at all, which is what keeps the
+split from eroding (decisions.md D34).
 
 Caddy also writes a JSON access log. It is the only entry point from the internet
 and none of the apps behind it record who reached them, so it is the only place
 an access record can exist. It is also what the fail2ban `caddy-auth` jail reads,
-and the only log that sees the true client address — Jellyfin and Jellyseerr both
+and the only log that sees the true client address — Jellyfin and Seerr both
 see Caddy's container IP unless `KnownProxies` says otherwise.
 
 ### 5.3 Security constraints
@@ -381,11 +378,14 @@ mechanisms below are kept anyway, because they are what makes that still true
 the day someone sets `PUBLIC_HTTP=true` — which is exactly the day nobody will
 re-derive this reasoning:
 
-1. **No route.** Those eight are absent from `caddy/sites.caddy`, so the proxy
-   has nowhere to send a request for them even if one arrived. Asserted by
-   `validate.sh`.
-2. **No DNS.** Only three names resolve to the box, and they resolve to a
-   private address. Nothing resolves at all for the other eight.
+1. **No public route.** They are absent from `caddy/sites.caddy` — asserted by
+   `validate.sh` — and the routes they do have, in `caddy/admin.caddy`, each
+   403 a client outside RFC1918 before the proxy runs. D34 traded "there is no
+   route" for "the route refuses", which is one mechanism where there were
+   three, and is why `validate.sh` asserts the guard mechanically.
+2. **A private address in DNS.** The wildcard record resolves every name to the
+   box's LAN address. That stops discovery; it does not stop a deliberate
+   request carrying a forged Host header, which is what mechanism 1 is for.
 3. **No packet.** The `DOCKER-USER` chain drops anything arriving off-box; with
    `PUBLIC_HTTP=false` not even 80 and 443 are returned.
 
@@ -395,9 +395,8 @@ API key in order to do its job — so a session on Cleanuparr reaches the same
 arbitrary command execution the paragraph above is about, with one extra click.
 It is excluded by the same three mechanisms and audited like the rest (D30).
 
-**The ninth admin surface is the wg-easy UI, and it is excluded differently.**
-The eight above are Docker publishes, which is why they need `DOCKER-USER` — UFW
-never sees them. wg-easy runs with host networking, so `WG_UI_PORT` is an
+**The wg-easy UI is excluded differently from the other seven.** Those are
+Docker publishes, which is why they need `DOCKER-USER` — UFW never sees them. wg-easy runs with host networking, so `WG_UI_PORT` is an
 ordinary host listener that `ufw default deny incoming` genuinely filters, and
 the router never forwards it. Same outcome, different mechanism; `validate.sh`'s
 route check does not cover it because there is no route to check, so the control
@@ -445,32 +444,29 @@ they are not obvious:
 
 Order matters; each step depends on the previous.
 
-1. **qBittorrent.** Set credentials. Create categories `movies`, `tv`, `anime`,
-   `music` with save paths under `/data/torrents/`. Enable preallocation. Set
+1. **qBittorrent.** Set credentials. Create categories `movies`, `tv` and
+   `anime` with save paths under `/data/torrents/`. Enable preallocation. Set
    incomplete downloads to a subfolder within the same path (not a different
    filesystem).
 2. **Prowlarr.** Add indexers. Include anime-specific ones (see §8).
-3. **Prowlarr -> apps.** Add Sonarr, Radarr and Lidarr under Settings > Apps.
+3. **Prowlarr -> apps.** Add Sonarr and Radarr under Settings > Apps.
    Indexers sync automatically from this point on.
-4. **Sonarr, Radarr and Lidarr -> qBittorrent.** Add as download client, matching
-   the category names from step 1.
+4. **Sonarr and Radarr -> qBittorrent.** Add as download client, matching the
+   category names from step 1.
 5. **Root folders.** Sonarr: `/data/media/tv` and `/data/media/anime`. Radarr:
-   `/data/media/movies`. Lidarr: `/data/media/music` — note that Lidarr requires
-   a default quality *and* metadata profile on the root folder, which Sonarr and
-   Radarr do not.
-6. **Verify hardlinking.** In Sonarr/Radarr/Lidarr, ensure "Use Hardlinks instead
+   `/data/media/movies`.
+6. **Verify hardlinking.** In Sonarr and Radarr, ensure "Use Hardlinks instead
    of Copy" is enabled. Test with one import and confirm via `ls -li` that the
    inode is shared and disk usage did not double. **Do not skip this check.**
 7. **Bazarr.** Connect to Sonarr and Radarr, configure subtitle providers and
-   languages. It has nothing to do with Lidarr.
+   languages.
 8. **Cleanuparr.** Create the admin account before anyone else can — it has a
    first-run setup flow and no way to pin credentials ahead of time. Leave
-   "Disable Auth for Local Addresses" off (§5.3). Add qBittorrent and the four
+   "Disable Auth for Local Addresses" off (§5.3). Add qBittorrent and the three
    *arrs. Leave the destructive cleaners disabled until you have watched it run
    once: it has write access to `/data` and the library is not backed up.
 9. **Jellyfin.** Create libraries pointing at `/data/media/movies`,
-   `/data/media/tv`, `/data/media/anime` and `/data/media/music`. Configure
-   hardware acceleration.
+   `/data/media/tv` and `/data/media/anime`. Configure hardware acceleration.
 10. **Infuse.** Add Jellyfin as a source. This preserves watch state, resume
     position, and library sync across devices, which a plain SMB share does not.
 

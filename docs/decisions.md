@@ -4,6 +4,12 @@ The spec (`spec.md`) settles *what* gets built. This file records the choices
 made while implementing it that the spec leaves open, and the questions still
 outstanding. Add to it rather than relitigating a decision in a code comment.
 
+**Numbering, before the next merge.** `main` is at D38. The
+`books-audiobooks-and-music` branch independently claims **D37–D45**, and its
+D44 is the seerr migration that landed here as D37. That branch's nine decisions
+and their internal cross-references need renumbering before it merges — git will
+not flag it, because both files only ever append.
+
 ---
 
 ## Decided
@@ -230,6 +236,10 @@ it from the UI.
 
 ### D16. Jellyseerr is the household front door, not the *arr UIs
 
+**Still true; the product is now called Seerr (D37).** The decision below is
+left in its original words — every entry before D37 predates the rename, and
+rewriting them would hide when the change actually happened.
+
 The request was a tiered navigation page so a non-technical household member
 could find her way around. Interrogating it changed the answer.
 
@@ -273,13 +283,13 @@ One file therefore works at both the real domain and a dev hostname, port
 included. A server-side template on the domain variable would lose the dev port,
 since that variable carries no port.
 
-Four later amendments: the variable is now `{$PUBLIC_DOMAIN}` (D25); this
-derivation applies to the **two public tiles only** — the admin chips point at
-`<lan-ip>:<port>` and are rendered server-side, because nothing proxies them;
-there are **nine** admin tools behind the disclosure, not six, since D26 added
-wg-easy and D29/D30 added Lidarr and Cleanuparr; and since **D31** even the two
-public tiles use `<lan-ip>:<port>` when the client is local, so the derivation
-above is now the fallback rather than the whole rule.
+Four later amendments: the variable is now `{$PUBLIC_DOMAIN}` (D25); since
+**D31** even the two public tiles use `<lan-ip>:<port>` when the client is
+local, so the derivation above is the fallback rather than the whole rule; the
+admin chips were server-rendered `<lan-ip>:<port>` links until **D34** gave them
+names, and now derive their href the same way the tiles do; and there are
+**eight** admin tools behind the disclosure, not six — D26 added wg-easy and D30
+added Cleanuparr, D29 added Lidarr and D38 took it away again.
 
 All of the above still holds. Two of its literal claims no longer do: there is
 now a third file, `app.js`, and the page makes same-origin requests of its own
@@ -490,15 +500,18 @@ guaranteed a route out.
 **Amended by D26, and by what shipping on a real domain turned out to mean.**
 Four literal claims above have moved:
 
-- There are **nine** admin chips and **eleven** marks, not six and eight — D26
-  added the wg-easy chip, D29 and D30 added Lidarr and Cleanuparr. Two are now
+- There are **eight** admin chips and **ten** marks, not six and eight — D26
+  added the wg-easy chip and D30 Cleanuparr; D29 added Lidarr and D38 removed
+  it. Do not trust this sentence over the page: `validate.sh` asserts the chip
+  set against `admin.caddy` precisely because a number in prose goes stale
+  without anything failing. Two of the marks are now
   exceptions to "the marks are the projects' own": WireGuard's logo is a wordmark
   that does not survive being put on a 512-square plate, and Cleanuparr ships its
   only vector as a 71 KB traced bitmap. Both are hand-drawn, and both say so in
   a comment beside them.
 - The `validate.sh` check compares the **tiles'** `data-sub` set against the
-  routes, not the whole page's. The nine chips carry a `data-sub` too and are
-  not routes; comparing all of them would fail by construction.
+  routes in `sites.caddy`, not the whole page's. The admin chips carry a
+  `data-sub` too; they are checked separately, against `admin.caddy` (D34).
 - The CORS paragraph is moot twice over. Under D25 **no admin UI is proxied at
   all**, so there is nothing to put a header on, and the count was never eight.
 - **The Manage dots cannot fire on the deployed page, and the reason is
@@ -552,11 +565,11 @@ adding a route by mistake does not expose anything, and `validate.sh` fails if
 one of those six names appears in the routes file at all — including in a
 comment, because a commented-out block is one keystroke from live.
 
-**What `*.ts.net` never was.** The old design routed all nine apps at
+**What `*.ts.net` never was.** The old design routed every admin app at
 `<sub>.<host>.ts.net`. MagicDNS gives a node exactly one name and does not
 resolve subdomains of it, and `tailscale cert` only issues for a node's own
-FQDN — so those eight names would very likely have resolved to nothing and
-obtained no certificate. Never verified either way, because there was never a
+FQDN — so those names would very likely have resolved to nothing and obtained
+no certificate. Never verified either way, because there was never a
 tailnet; now moot, since nothing depends on them. Q1 and Q2 close with it.
 
 **Certificates.** Let's Encrypt over HTTP-01, three names. That needs port 80
@@ -767,7 +780,13 @@ victim would have been the household.
 
 ---
 
-## D29. Lidarr, and music as a change of scope
+## D29. Lidarr, and music as a change of scope — **superseded by D38**
+
+**Reversed in full.** Lidarr was removed and music left the scope again; this
+entry stays because it is the record of what has to come back if the
+books-and-music branch ships. Everything below still describes what Lidarr
+needed — the v1 API, the root folder that wants two profile ids, the category
+that has to exist on both download clients — and all of it will be true again.
 
 The spec's first sentence said "TV, film, and anime". Adding Lidarr moves it, so
 this is a scope change rather than another service — recorded here rather than
@@ -845,7 +864,7 @@ stalled at 99%, a file nothing links to — are torrent-shaped to begin with.
 
 1. **Not a LinuxServer image.** `CLAUDE.md` says not to substitute other
    maintainers' images. There is no LinuxServer build of Cleanuparr, so the
-   choice is this image or not having it. Jellyseerr and Recyclarr are the
+   choice is this image or not having it. Seerr and Recyclarr are the
    existing precedents. It implements `PUID`/`PGID`/`TZ`/`UMASK` itself, so the
    contract the convention exists to protect is intact.
 2. **No pinnable API key or credentials.** Both are generated into its own SQLite
@@ -856,7 +875,8 @@ stalled at 99%, a file nothing links to — are torrent-shaped to begin with.
 3. **It mounts `/data` read-write.** Its unlinked-download cleaner counts
    hardlinks on the files themselves, which no API can do for it, so it needs the
    identical `/data:/data` mount invariant 1 requires. `validate.sh`'s
-   `MEDIA_SERVICES` goes from six to eight with Lidarr. Read-only was considered
+   `MEDIA_SERVICES` goes from six to seven — it was eight while Lidarr was in
+   the stack (D38). Read-only was considered
    and rejected: the orphan-file cleaner deletes, and shipping a half-working
    configuration to buy a safety property is worse than shipping the destructive
    features switched off, which is what the setup step in spec §6 says to do.
@@ -912,12 +932,12 @@ person reasons wrongly from.
 private ones.** As first written — and as `X-Admin-Visible` was written before
 it — `private_only` set the header for `@private` and did nothing otherwise, so
 a client-supplied `X-Local-Client: 1` from the internet survived to `templates`
-and rendered both branches: the Manage block, the nine admin marks, and
+and rendered both branches: the Manage block, the admin marks, and
 `data-lan` on the hero tiles.
 
-That is a disclosure and not a way in. The nine apps still have no route in this
-file, no public DNS record, and a `DOCKER-USER` drop; all three mechanisms D25
-relies on are untouched, and the sentence above about presentation-versus-control
+That is a disclosure and not a way in. The admin apps still have no route in
+this file, no public DNS record, and a `DOCKER-USER` drop; all three mechanisms
+D25 relies on are untouched, and the sentence above about presentation-versus-control
 remains exactly true. What a spoofed header hands out is `ADMIN_HOST`, the port
 map and the service names — which is precisely what `index.html` gates the
 sprite to withhold, so the intent was already there and the mechanism did not
@@ -953,7 +973,7 @@ it.
 **What it costs, stated plainly because nothing else will say it.**
 
 - *No TLS on the LAN path.* Encrypted in transit over WireGuard, plaintext on the
-  LAN — which D25 already accepted for the nine admin apps, now extended to the
+  LAN — which D25 already accepted for the admin apps, now extended to the
   two the household uses.
 - *The dot no longer attests to the link under it.* This is the real cost. A
   `fetch` from this `https:` page to an `http:` LAN address is blocked as active
@@ -1119,7 +1139,7 @@ surviving from a previous run is an opening that `ufw status` displays and
 nobody reads. The `DOCKER-USER` port-80/443 RETURNs are gated on the same
 variable.
 
-**The structural exclusion of the nine admin apps stays.** No route, no record,
+**The structural exclusion of the admin apps from `sites.caddy` stays.** No route, no record,
 no path through `DOCKER-USER`, and `validate.sh` still fails if one of those
 names appears in `sites.caddy` at all. It protects nothing extra today, when
 nothing is public. It is what keeps the model honest if `PUBLIC_HTTP` is ever
@@ -1133,7 +1153,8 @@ of DNS-01; and spec §5.3's exposure model. D26 is reaffirmed, not superseded.
 
 ## D34. The admin apps get names, behind a private-only guard
 
-All nine are routed through Caddy now — `sonarr.media.thorby.tech` and the rest,
+All of them are routed through Caddy now — `sonarr.media.thorby.tech` and the
+rest,
 on real certificates, in `caddy/admin.caddy`. They were deliberately unrouted
 for the whole life of this repo, so this is the entry to read before changing
 anything about exposure.
@@ -1324,6 +1345,112 @@ around a boot race would have traded a real invariant for a symptom.
 exposed it. Verification item 8 is the test, and it has not been re-run — a
 graceful reboot exercises the same race, so it is worth doing before the power
 cut.
+
+---
+
+## D37. Jellyseerr is now seerr, and `:latest` did not save us
+
+`fallenbagel/jellyseerr:latest` was last pushed on **14 August 2025**. The
+project was renamed to **seerr** and publishes `ghcr.io/seerr-team/seerr`,
+updated daily. In between, release **v3.4.0** patched **GHSA-mc6w-69r3-62h8**, a
+path traversal leading to remote code execution in the image proxy — reachable
+from a malicious or compromised media-server response, or by a
+man-in-the-middle where that connection is plain HTTP.
+
+The box has been running the abandoned image for twelve months, on one of the
+three household-facing names.
+
+**This is D7's counter-example and belongs recorded against it.** The `:latest`
+convention assumes the tag keeps moving, so that a security fix arrives with a
+`compose pull`. It says nothing about a repository that stops being published
+to. `:latest` did not go stale loudly; it went stale silently, which is the
+failure signature this repo keeps finding.
+
+Upstream migrates Overseerr and Jellyseerr data automatically on first start, so
+there is no export step — take a backup first anyway, because "automatic" and
+"reversible" are different words, and rehearse it against a *copy* of
+`${CONFIG_ROOT}/jellyseerr` on a spare port before cutting over. The migration
+is one-way once it has run.
+
+**The service keeps the name `jellyseerr`** in `docker-compose.yml`, and so does
+`${CONFIG_ROOT}/jellyseerr`. Renaming the directory would mean moving it on the
+box by hand, and a missed `mv` produces a *fresh* seerr with an open setup
+wizard — the D18 bootstrap hole, self-inflicted, on the household front door.
+The container name is what Caddy proxies to and what `audit-auth.sh` probes;
+none of that is worth a rename. The route was already `seerr.` and needs no
+change. The landing page mark does change, because seerr's is a different logo.
+
+**Two things about the image are not visible in the diff, and both bite.**
+
+- It declares `USER node:node`, so it runs as **UID 1000** and no longer as
+  root. `${CONFIG_ROOT}/jellyseerr` is root-owned from the old image, so it
+  needs `chown -R 1000:1000` before the first start or the container dies on a
+  permission denied. That is upstream's fixed UID, not `PUID` — 1000 is `nick`
+  on this box rather than the `media` user, which reads oddly and is correct.
+  Adding `user: "${PUID}:${PGID}"` to reconcile it with the rest of the stack is
+  the tempting wrong answer: the image's own files are node-owned.
+- It no longer ships an init process, hence **`init: true`**. Without it a
+  crashed child is never reaped.
+
+**The books-and-music branch made this change first** (as its D44) and made
+neither of those two adjustments, because that branch is not deployed and never
+hit a root-owned config directory. When it merges, this decision is the one that
+holds.
+
+---
+
+## D38. Lidarr comes out, and music leaves the scope again
+
+**Supersedes D29.** Lidarr does not work as well as Sonarr and Radarr, and the
+things that would fix it — a Soulseek source, a music front end, a request path
+— all live on `books-audiobooks-and-music` and are not ready. Running a fourth
+*arr that reliably finds nothing is worse than not running it: it costs a
+container, a route, a chip, an API key in `.env`, four checks in `audit-auth.sh`
+and a database in the backup set, and returns a library nobody uses.
+
+**This reverses D29 exactly**, which is why that decision is left in place rather
+than deleted — it is the record of what has to come back.
+
+- spec §1's scope sentence loses "and music". D29 explicitly framed moving that
+  sentence as the point of the decision, so moving it back is the point of this
+  one.
+- The three `music` leaves come out of the §3.1 tree, and out of both copies of
+  the list that creates it (`scripts/init-tree.sh` and `setup.sh`).
+- `music` comes out of the qBittorrent and SABnzbd category loops in
+  `provision.sh`.
+
+**Nothing on disk is deleted.** `${CONFIG_ROOT}/lidarr` stays, the existing
+`torrents/music`, `usenet/complete/music` and `media/music` directories stay
+with whatever is in them, and the `music` categories already created on both
+download clients stay — those loops only add. Re-adding Lidarr is a revert, not
+a re-provision.
+
+**The API-version plumbing in `provision.sh` stays, and that is deliberate.**
+`add_root_folder`, `upsert_download_client` and `ensure_hardlinks` each take a
+trailing `[api-version]` that defaults to `v3`, and `add_root_folder` keeps its
+`v1` branch — the one that looks up a default quality *and* metadata profile
+rather than assuming id 1. Nothing calls any of it today.
+
+Deleting it is the trap. The books-and-music branch calls those same helpers
+with `v1` for Chaptarr, which answers Readarr's API and needs exactly that
+root-folder shape. Git would merge the removal here and the new call sites there
+**cleanly** — they are different lines — and produce a script that silently
+passes an ignored argument, requests `/api/v3/rootfolder` and 404s. That is the
+"reported success for something that had not happened" shape that produced all
+nine defects of the first deployment, pre-loaded into a merge.
+
+**What this changes downstream.** `validate.sh`'s `MEDIA_SERVICES` goes from
+eight to seven. `audit-auth.sh` audits ten apps rather than eleven. The stack is
+twelve services, eleven certificates, eight admin chips. `backup-config.sh`
+drops to three native *arr backups. The Manage grid was laid out for nine chips
+in three columns; eight in three columns leaves an orphaned pair, so the track
+floor moved to give four columns and two even rows.
+
+**Recyclarr is unaffected** — D29 already recorded that it has no Lidarr
+support, so `config/recyclarr/recyclarr.yml` never mentioned it.
+
+**This is conditional, not final.** If `books-audiobooks-and-music` ships,
+Lidarr ships with it.
 
 ---
 

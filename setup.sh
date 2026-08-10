@@ -275,7 +275,7 @@ EOF
 # Brute-force protection for the two apps that face the internet.
 #
 # Nothing else in the stack rate-limits anything: Caddy has no rate_limit
-# directive without a plugin, and neither Jellyfin nor Jellyseerr locks an
+# directive without a plugin, and neither Jellyfin nor Seerr locks an
 # account out by default. Fine when the box was private; thin for a login page
 # anyone can reach (decisions.md D25).
 configure_fail2ban_web() {
@@ -284,7 +284,7 @@ configure_fail2ban_web() {
 
   local caddy_log="${CONFIG_ROOT:-/opt/mediaserver}/caddy/logs/access.log"
 
-  # The jail bans on any 401 or 403, and Jellyfin's web client and Jellyseerr
+  # The jail bans on any 401 or 403, and Jellyfin's web client and Seerr
   # both return 401 routinely — an expired session, a token refresh, a client
   # reconnecting on a flaky mobile connection. Ten of those inside ten minutes
   # is an ordinary evening, not an attack, so without this the jail's first
@@ -307,7 +307,7 @@ configure_fail2ban_web() {
   fi
 
   # Caddy's access log is already JSON and already rolled. It is also the only
-  # place that records the REAL client address — Jellyfin and Jellyseerr both
+  # place that records the REAL client address — Jellyfin and Seerr both
   # see Caddy's container IP unless told otherwise, so this jail is the one that
   # can actually ban an attacker rather than the proxy.
   write_file /etc/fail2ban/filter.d/caddy-auth.conf 0644 <<'EOF'
@@ -565,10 +565,10 @@ create_tree() {
   # torrents/, usenet/ and media/ are siblings on one filesystem so imports
   # hardlink instead of copying (spec §3.3). Splitting them degrades silently.
   local d
-  for d in torrents/movies       torrents/tv       torrents/anime       torrents/music \
+  for d in torrents/movies       torrents/tv       torrents/anime \
            usenet/incomplete \
-           usenet/complete/movies usenet/complete/tv usenet/complete/anime usenet/complete/music \
-           media/movies          media/tv          media/anime          media/music; do
+           usenet/complete/movies usenet/complete/tv usenet/complete/anime \
+           media/movies          media/tv          media/anime; do
     run mkdir -p "${DATA_DIR}/${d}"
   done
   run chown -R "${PUID}:${PGID}" "$DATA_DIR"
@@ -872,7 +872,7 @@ configure_firewall() {
     # cannot reach by container name. Caddy's packet leaves the bridge with a
     # 172.x source, arrives at the host's INPUT chain, and default-deny drops it
     # -- the LAN allow does not cover it. The symptom is a 502 on one name out
-    # of twelve.
+    # of eleven.
     #
     # The honest cost: spec §5.3 used to say ufw genuinely filters this port,
     # full stop. It now filters it for everything except containers on this box.
@@ -910,9 +910,10 @@ configure_firewall() {
   # The public front door. Only reached when PUBLIC_DOMAIN is set, so a
   # tunnel-and-LAN-only box stays exactly as it was.
   #
-  # Caddy serves three names here — the landing page, Jellyfin and Jellyseerr.
-  # The nine admin apps are not routed through it at all, so opening 80 and 443
-  # exposes those three and nothing else (decisions.md D25, spec §5.3).
+  # Caddy serves three names here — the landing page, Jellyfin and Seerr.
+  # The eight admin apps are routed too, out of caddy/admin.caddy, but every one
+  # of those blocks 403s a client outside RFC1918 — so opening 80 and 443
+  # exposes those three and nothing else (decisions.md D25, D34, spec §5.3).
   if [[ "${PUBLIC_HTTP:-false}" == "true" ]]; then
     [[ -n "${PUBLIC_DOMAIN:-}" ]] || die "PUBLIC_HTTP=true needs PUBLIC_DOMAIN set."
     run ufw allow 80/tcp
@@ -1166,7 +1167,7 @@ report() {
     info "from the LAN and from any WireGuard peer, by the same address."
   else
     warn "wg0 does not exist yet. Until the wg-easy container has started once,"
-    warn "the nine admin apps are LAN-only:  docker compose up -d wg-easy"
+    warn "the eight admin apps are LAN-only:  docker compose up -d wg-easy"
   fi
   echo
 }

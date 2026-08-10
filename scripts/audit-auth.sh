@@ -57,7 +57,6 @@ set +a
 # an admin session.
 SONARR_URL="http://127.0.0.1:${SONARR_PORT:-8989}"
 RADARR_URL="http://127.0.0.1:${RADARR_PORT:-7878}"
-LIDARR_URL="http://127.0.0.1:${LIDARR_PORT:-8686}"
 PROWLARR_URL="http://127.0.0.1:${PROWLARR_PORT:-9696}"
 JELLYFIN_URL="http://127.0.0.1:${JELLYFIN_PORT:-8096}"
 SEERR_URL="http://127.0.0.1:${SEERR_PORT:-5055}"
@@ -147,10 +146,9 @@ audit_arr() {
 }
 
 echo
-echo "Sonarr / Radarr / Lidarr / Prowlarr"
+echo "Sonarr / Radarr / Prowlarr"
 audit_arr Sonarr   "$SONARR_URL"   "${SONARR_API_KEY:-}"   v3
 audit_arr Radarr   "$RADARR_URL"   "${RADARR_API_KEY:-}"   v3
-audit_arr Lidarr   "$LIDARR_URL"   "${LIDARR_API_KEY:-}"   v1
 audit_arr Prowlarr "$PROWLARR_URL" "${PROWLARR_API_KEY:-}" v1
 
 # ─── qBittorrent ─────────────────────────────────────────────────────────────
@@ -330,7 +328,7 @@ else
   else
     bad "Jellyfin: the setup wizard has NOT been completed"
     note "Until it is, the first visitor to this port becomes the Jellyfin admin"
-    note "— and Jellyseerr authenticates against Jellyfin, so that is the whole"
+    note "— and Seerr authenticates against Jellyfin, so that is the whole"
     note "household front door. Finish it before widening BIND_ADDR off loopback."
   fi
 
@@ -341,27 +339,32 @@ else
   fi
 fi
 
-# ─── Jellyseerr ──────────────────────────────────────────────────────────────
+# ─── Seerr ───────────────────────────────────────────────────────────────────
+#
+# The container is still called jellyseerr and the image is seerr: the service
+# kept its name through the rename so ${CONFIG_ROOT} did not have to move
+# (decisions.md D37). Both probes below are anonymous by design.
 
 echo
-echo "Jellyseerr"
+echo "Seerr"
 
 if ! up jellyseerr; then
-  skip "jellyseerr is not running"
+  skip "seerr is not running"
 else
   init=$(curl -fsS --max-time 8 "$SEERR_URL/api/v1/settings/public" 2>/dev/null \
          | jq -r '.initialized // "unknown"')
   if [[ "$init" == "true" ]]; then
-    ok "Jellyseerr: initialised"
+    ok "Seerr: initialised"
   else
-    bad "Jellyseerr: still uninitialised — /setup is open to the first visitor"
+    bad "Seerr: still uninitialised — /setup is open to the first visitor"
+    note "A migration that lost its database comes back looking exactly like this."
     note "Finish it before widening BIND_ADDR off loopback."
   fi
 
   if [[ "$(code "$SEERR_URL/")" == "200" ]]; then
-    bad "Jellyseerr: GET / returned 200 without a login"
+    bad "Seerr: GET / returned 200 without a login"
   else
-    ok "Jellyseerr: GET / redirects an anonymous request to the login page"
+    ok "Seerr: GET / redirects an anonymous request to the login page"
   fi
 fi
 

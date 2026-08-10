@@ -73,13 +73,11 @@ which also proves the two containers agree about `/data`:
 ./scripts/test-hardlinks.sh
 DOWNLOADER=sabnzbd SRC_DIR=/data/usenet/complete/tv LABEL=usenet \
   ./scripts/test-hardlinks.sh    # the Usenet tree must pass too
-IMPORTER=lidarr SRC_DIR=/data/torrents/music DST_DIR=/data/media/music \
-  LABEL=music ./scripts/test-hardlinks.sh    # and the music tree
 ```
 
-The third run is the one that catches a Lidarr added without its `/data` mount,
-or with a different one. It is a separate container pair from the first two, so
-neither of them would notice.
+Two runs since D38 removed Lidarr and the music tree with it. If an *arr is ever
+added back, add a run for it: each one is a distinct container pair, and a new
+app mounted at the wrong path is invisible to the pairs already passing.
 
 Then confirm it holds for a *real* import too. Grab something small, let Sonarr
 or Radarr import it, and check by hand:
@@ -118,9 +116,9 @@ df -h /data                          # ...will exceed actual used space if hardl
 ## 5. Nothing is reachable from the internet but the WireGuard port
 
 The single most important check in this file. **Rewritten for D33/D34** — this
-used to verify that three names were public and nine apps were not. Nothing is
-public now: the router forwards `WG_PORT` and nothing else, and all twelve names
-resolve to the box's LAN address.
+used to verify that three names were public and the admin apps were not. Nothing
+is public now: the router forwards `WG_PORT` and nothing else, and every name
+resolves to the box's LAN address.
 
 **Certificates, from DNS-01.** No inbound path is needed for issuance, so a
 failure here is the Cloudflare token, not the router:
@@ -129,7 +127,9 @@ failure here is the Cloudflare token, not the router:
 curl -sI https://<domain>          | head -1   # 200
 curl -sI https://jellyfin.<domain> | head -1   # 302 to login
 curl -sI https://sonarr.<domain>   | head -1   # 302 to login
-docker compose logs caddy | grep -c 'certificate obtained'   # 12
+docker compose logs caddy | grep -c 'certificate obtained'   # one per name in
+                                                             # sites.caddy +
+                                                             # admin.caddy
 docker compose logs caddy | grep -o '"issuer":"[^"]*"' | sort -u
 ```
 
@@ -140,7 +140,7 @@ works perfectly for `curl -k` and fails in every browser in the house.
 harmless in a public zone:
 
 ```bash
-for h in "" jellyfin. seerr. sonarr. radarr. lidarr. prowlarr. bazarr. qbit. sab. cleanuparr. wg.; do
+for h in "" jellyfin. seerr. sonarr. radarr. prowlarr. bazarr. qbit. sab. cleanuparr. wg.; do
   printf '%-12s %s\n' "$h" "$(dig +short "${h}<domain>" @1.1.1.1 | tr '\n' ' ')"
 done
 dig +short <wg-host> @1.1.1.1     # the ONLY name pointing at the WAN address
@@ -165,7 +165,7 @@ the proxy it never runs.
 data with WireGuard OFF:
 
 ```bash
-nmap -Pn -p 80,443,5055,6767,6881,8080,8085,8096,8686,8989,7878,9696,11011,51821 <wan-ip>
+nmap -Pn -p 80,443,5055,6767,6881,8080,8085,8096,8989,7878,9696,11011,51821 <wan-ip>
 nmap -Pn -sU -p 51820 <wan-ip>
 ```
 
@@ -256,14 +256,14 @@ confirming, along with everything else that can be switched off in a UI.
 All checks must pass. It covers the *arr authentication method and scope, the
 API keys, qBittorrent's session enforcement and external-program setting,
 SABnzbd's login and `inet_exposure`, Bazarr's form auth, Jellyfin's setup wizard,
-Jellyseerr's initialisation, wg-easy's session, and Cleanuparr's setup state and
+Seerr's initialisation, wg-easy's session, and Cleanuparr's setup state and
 local-address bypass.
 
 Three of those deserve a manual look because they are the ones a UI can undo:
 
 - qBittorrent → Settings → Web UI: **Run external program on torrent completion
   is empty** (§5.3 — arbitrary command execution).
-- Sonarr/Radarr/Lidarr/Prowlarr → Settings → General: authentication is
+- Sonarr/Radarr/Prowlarr → Settings → General: authentication is
   **required for everyone**, not "disabled for local addresses". Caddy reaches
   these apps over the compose bridge, so the local-addresses exemption applies to
   every proxied request and leaves the admin UI open. The setting is pinned in
@@ -315,7 +315,7 @@ Then prove the inbound side from off-box, on a host that is neither on the LAN
 nor the tunnel (a phone on mobile data is enough):
 
 ```bash
-nmap -Pn -p 80,443,5055,6767,6881,8080,8085,8096,8686,8989,7878,9696,11011,51821 <public-ip>
+nmap -Pn -p 80,443,5055,6767,6881,8080,8085,8096,8989,7878,9696,11011,51821 <public-ip>
 ```
 
 All filtered or closed except 80 and 443. Item 5 tests the same thing but was
@@ -338,7 +338,7 @@ Measured after the D36 fix, 9 Aug 2026:
 12:41:43  dockerd "Starting up"   <- held 12s, then proceeded
 ```
 
-All thirteen containers healthy, `docker port caddy` populated, 80/443/51821
+All twelve containers healthy, `docker port caddy` populated, 80/443/51821
 listening, every name answering, and container DNS working without a daemon
 restart. Check all of those, not just `docker compose ps` — the failure mode
 this fix addresses looked perfectly healthy in `ps`.
@@ -406,7 +406,7 @@ the database, rather than trusting that tar exited 0:
 
 Every command below needs `sudo`: the archive is written mode 0600 and owned by
 root, because it contains wg-easy's peer keys and Cleanuparr's database — which
-holds the qBittorrent password and all four *arr API keys. That makes it as
+holds the qBittorrent password and every *arr API key. That makes it as
 sensitive as `.env`, and it is why the extract is not readable as your own user.
 
 ```bash
@@ -414,22 +414,23 @@ latest=$(sudo ls -1t /mnt/disk1/backups/mediaserver-config-*.tar.gz | head -1)
 sudo mkdir -p /tmp/restore-test
 sudo tar -xzf "$latest" -C /tmp/restore-test
 sudo ls /tmp/restore-test/mediaserver/
-for db in sonarr/sonarr.db radarr/radarr.db lidarr/lidarr.db prowlarr/prowlarr.db; do
+for db in sonarr/sonarr.db radarr/radarr.db prowlarr/prowlarr.db; do
   printf '%-22s %s\n' "$db" \
     "$(sudo sqlite3 "/tmp/restore-test/mediaserver/$db" 'PRAGMA integrity_check;')"
 done
 sudo rm -rf /tmp/restore-test
 ```
 
-`integrity_check` must return `ok` for all four. Anything else means the database
+`integrity_check` must return `ok` for all three. Anything else means the database
 was copied mid-write and the backup is worthless.
 
 Confirm `wg-easy` and `cleanuparr` are both in the listing. They are the two
 directories `provision.sh` cannot recreate — everything else could be rebuilt by
 re-running it, but those two hold state that exists nowhere else.
 
-Measured on the target, 9 Aug 2026: 54 MB, all four databases `ok`, both
-directories present.
+Measured on the target, 9 Aug 2026: 54 MB, all databases `ok`, both directories
+present. That run predates D38, so it covered four; Lidarr's is still in the
+archive and is no longer produced.
 
 - [ ] Passes
 
@@ -469,8 +470,8 @@ From a LAN or tunnel client:
 ```bash
 curl -s https://<domain>/ | grep -c 'class="manage"'           # 1
 curl -s https://<domain>/ | grep -c '{{'                       # 0 — templates ran
-curl -s https://<domain>/ | grep -c 'class="chip"'             # 9
-curl -s https://<domain>/ | grep -c 'i-lidarr\|i-cleanuparr'   # 2
+curl -s https://<domain>/ | grep -c 'class="chip"'             # 8
+curl -s https://<domain>/ | grep -c 'i-cleanuparr'             # 1
 ```
 
 A count of `{{` above zero means `templates` is missing from the site block, in
@@ -509,10 +510,10 @@ Every link is now `https://<data-sub>.<host-the-page-was-served-from>`, built by
 ```bash
 curl -s https://<domain>/ | grep -c 'data-lan'                 # 0 — removed
 curl -s https://<domain>/ | grep -oE '\{\{env "[A-Z_]+"\}\}'   # nothing
-curl -s https://<domain>/ | grep -c 'href="#"'                 # 11 — JS fills these
+curl -s https://<domain>/ | grep -c 'href="#"'                 # 10 — JS fills these
 ```
 
-The `href="#"` count is the tell: eleven links (two tiles, nine chips) ship with
+The `href="#"` count is the tell: ten links (two tiles, eight chips) ship with
 a placeholder and are rewritten on load. `app.js` is a plain synchronous script
 at the end of `<body>`, not `defer`, precisely so they are never visible and
 clickable while still pointing at `#`.
@@ -558,7 +559,7 @@ Two things about the container itself first, both assumed rather than proven
 because this image has never been started anywhere (D30).
 
 **The healthcheck assumes `curl` is in the image.** Cleanuparr is not a
-LinuxServer build, and Jellyseerr's healthcheck deliberately uses `wget` because
+LinuxServer build, and Seerr's healthcheck deliberately uses `wget` because
 its image has no `curl` — so the binary is not a free choice here. Nothing
 `depends_on` cleanuparr, so a wrong one does not cascade; it just leaves the
 container permanently `unhealthy` and that status line stops meaning anything.
@@ -605,35 +606,61 @@ degraded to copying, every imported file looks unlinked to it.
 
 - [ ] Passes
 
-## 15. Lidarr imports music, over the v1 API
+## 15. Seerr came up on the migrated database
 
-Lidarr is the only app here reached on `/api/v1/` through helpers that were
-`v3`-only before D29, and its root folder needs two profile ids that Sonarr and
-Radarr do not. Both failure modes are quiet — `provision.sh` warns and carries
-on rather than dying — so read the output rather than the exit code:
-
-```bash
-./scripts/provision.sh 2>&1 | grep -iA2 lidarr
-```
-
-Expect a root folder, two download clients and a Prowlarr link, with no
-"skipping root folder" warning. That warning means Lidarr had no quality or
-metadata profile yet when the provisioner ran; re-running after the app has
-finished its first start usually clears it.
-
-Then confirm the wiring took, from the API rather than the UI (D18 — the file
-disagrees with the running app):
+**Run the rehearsal first.** The migration from Jellyseerr rewrites
+`${CONFIG_ROOT}/jellyseerr` in place and is one-way (decisions.md D37), so prove
+it against a copy before the real one is touched:
 
 ```bash
-curl -s -H "X-Api-Key: $LIDARR_API_KEY" \
-  http://127.0.0.1:8686/api/v1/rootfolder | jq '.[].path'          # /data/media/music
-curl -s -H "X-Api-Key: $LIDARR_API_KEY" \
-  http://127.0.0.1:8686/api/v1/downloadclient | jq '.[].name'      # SABnzbd, qBittorrent
-curl -s -H "X-Api-Key: $LIDARR_API_KEY" \
-  http://127.0.0.1:8686/api/v1/config/mediamanagement | jq '.copyUsingHardlinks'   # true
+sudo ./scripts/backup-config.sh
+sudo cp -a /opt/mediaserver/jellyseerr /opt/mediaserver/seerr-rehearsal
+sudo chown -R 1000:1000 /opt/mediaserver/seerr-rehearsal
+docker run --rm --init -p 127.0.0.1:5056:5055 \
+  -v /opt/mediaserver/seerr-rehearsal:/app/config \
+  ghcr.io/seerr-team/seerr:latest
 ```
 
-Finally add one small album and let it import. Item 3's music run proves the
-filesystem can hardlink; this proves Lidarr actually does.
+In another shell, against the rehearsal port:
 
-- [ ] Passes
+```bash
+curl -s http://127.0.0.1:5056/api/v1/status | jq '.version'
+curl -s http://127.0.0.1:5056/api/v1/settings/public | jq '.initialized'   # true
+```
+
+`initialized: false` is the failure that matters, and it does not look like one:
+it means the migration did not find the database and seerr has come up fresh,
+with an open setup wizard where the household front door used to be. Stop the
+container and `sudo rm -rf /opt/mediaserver/seerr-rehearsal` when done.
+
+**Then the real one.** The ownership change is the step that breaks the front
+door if it is skipped — the image declares `USER node:node`, and the old one ran
+as root:
+
+```bash
+sudo chown -R 1000:1000 /opt/mediaserver/jellyseerr
+docker compose pull jellyseerr && docker compose up -d jellyseerr
+docker compose logs -f jellyseerr        # watch the migration run
+docker compose ps jellyseerr             # healthy, not just Up
+```
+
+Caddy `depends_on` this service, so do not restart Caddy until it reports
+healthy — an unhealthy seerr takes every name in the house with it.
+
+Then confirm the wiring survived, from the API rather than the UI (D18):
+
+```bash
+./scripts/provision.sh 2>&1 | grep -iA4 seerr
+./scripts/audit-auth.sh  | grep -i seerr
+```
+
+Expect the Radarr and Sonarr connections reconciled rather than created — a
+*created* connection means the migration lost them. `audit-auth.sh` must report
+initialised and an anonymous `GET /` that does not return 200.
+
+Finally, in a browser: sign in with an existing Jellyfin account, confirm the
+request history and user list are the ones from before, and push one test
+request through to Radarr.
+
+- [ ] Rehearsal passes on a copy
+- [ ] Passes on the live instance

@@ -156,36 +156,6 @@ services:
     ports:
       - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${RADARR_PORT:-7878}:7878"
 
-  # ── Music ──────────────────────────────────────────────────────────────────
-  # Jellyseerr cannot request music — it is a film and TV product — so unlike
-  # Sonarr and Radarr this one has no household-facing front door. Adding albums
-  # is an administrator's job in Lidarr's own UI (decisions.md D29).
-  #
-  # Its API is v1, not v3. Everything that talks to it has to say so.
-  lidarr:
-    image: lscr.io/linuxserver/lidarr:latest
-    container_name: lidarr
-    restart: unless-stopped
-    logging: *logging
-    security_opt: *security
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8686/ping || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-    environment:
-      <<: *env
-      LIDARR__AUTH__APIKEY: ${LIDARR_API_KEY:-}
-      # See the note on prowlarr — auth is pinned, not wizard-configured.
-      LIDARR__AUTH__METHOD: ${ARR_AUTH_METHOD:-Forms}
-      LIDARR__AUTH__REQUIRED: ${ARR_AUTH_REQUIRED:-Enabled}
-    volumes:
-      - ${CONFIG_ROOT:-/opt/mediaserver}/lidarr:/config
-      - ${DATA_ROOT:-/data}:/data
-    ports:
-      - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${LIDARR_PORT:-8686}:8686"
-
   # ── Subtitles ──────────────────────────────────────────────────────────────
   # Needs /data: it writes subtitle files alongside the media.
   bazarr:
@@ -315,8 +285,6 @@ services:
         condition: service_healthy
       radarr:
         condition: service_healthy
-      lidarr:
-        condition: service_healthy
 
   # ── Requests ───────────────────────────────────────────────────────────────
   # The household front door. Search, discover, and request — requests flow
@@ -324,8 +292,37 @@ services:
   # Jellyfin accounts. This is what keeps everyone else out of the *arr UIs.
   #
   # No /data mount: it only ever talks to APIs, never to media files.
+  #
+  # ── The image is seerr, and the service is still called jellyseerr ──────────
+  #
+  # Jellyseerr was renamed to seerr. `fallenbagel/jellyseerr:latest` stopped
+  # being published in August 2025 and a path-traversal-to-RCE in the image proxy
+  # was patched upstream in v3.4.0 — so :latest sat twelve months stale on the
+  # household-facing route without ever failing loudly. That is D7's one known
+  # counter-example, since that convention assumes the tag keeps moving
+  # (decisions.md D37).
+  #
+  # The service, container and ${CONFIG_ROOT} directory keep the old name on
+  # purpose. Renaming the directory means moving it on the box by hand, and a
+  # missed `mv` gives a FRESH seerr with an open setup wizard on the front door —
+  # the D18 bootstrap hole, self-inflicted. Upstream migrates the database in
+  # place on first start, so leaving the path alone is the whole migration.
+  #
+  # Two things the image changed that are not visible here:
+  #
+  #   - It declares `USER node:node`, so it runs as UID 1000 and no longer as
+  #     root. ${CONFIG_ROOT}/jellyseerr has to be owned by 1000 or the container
+  #     crashes on a permission denied it cannot recover from. That is upstream's
+  #     fixed UID, not PUID — do not add `user:` here to reconcile it with the
+  #     rest of the stack, because the image's own files are node-owned.
+  #   - It no longer ships an init process, hence `init: true`. Without it a
+  #     crashed child is never reaped and the container accumulates zombies.
+  #
+  # The healthcheck still uses wget rather than curl: the base is node:alpine,
+  # so busybox wget is present and curl is not.
   jellyseerr:
-    image: fallenbagel/jellyseerr:latest
+    image: ghcr.io/seerr-team/seerr:latest
+    init: true
     container_name: jellyseerr
     restart: unless-stopped
     logging: *logging
@@ -343,8 +340,8 @@ services:
       - ${CONFIG_ROOT:-/opt/mediaserver}/jellyseerr:/app/config
     ports:
       - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${SEERR_PORT:-5055}:5055"
-    # Jellyseerr reads libraries from Jellyfin and pushes requests into the
-    # *arrs, so it wants them answering, not merely started.
+    # Seerr reads libraries from Jellyfin and pushes requests into the *arrs, so
+    # it wants them answering, not merely started.
     depends_on:
       jellyfin:
         condition: service_healthy
@@ -387,11 +384,12 @@ services:
 
   # ── Reverse proxy ──────────────────────────────────────────────────────────
   # The public front door, and the only thing reachable from the internet. It
-  # routes exactly three names — the landing page, Jellyfin and Jellyseerr.
+  # routes exactly three names — the landing page, Jellyfin and Seerr.
   #
-  # The nine admin apps are NOT proxied. They are reached at <lan-ip>:<port>,
-  # on the LAN or over WireGuard, so there is no public route to them to get
-  # wrong (decisions.md D25, D26, D29, D30, spec §5.3).
+  # The eight admin apps are routed too, but in a separate file: since D34 they
+  # answer on their own names out of caddy/admin.caddy, behind a guard that 403s
+  # any client outside RFC1918. sites.caddy holds what may be public, admin.caddy
+  # holds what must not be (decisions.md D25, D30, D33, D34, spec §5.3).
   caddy:
     # Built, not pulled: DNS-01 needs the Cloudflare provider module compiled
     # in, because there is no inbound path for an HTTP-01 challenge on a
@@ -445,7 +443,7 @@ services:
       - ./caddy/sites.caddy:/etc/caddy/sites.caddy:ro
       # The admin routes, which refuse any client outside RFC1918 (D34). A
       # missing mount here is not a soft failure: Caddyfile imports it, so Caddy
-      # refuses to start rather than quietly serving nine fewer names.
+      # refuses to start rather than quietly serving eight fewer names.
       - ./caddy/admin.caddy:/etc/caddy/admin.caddy:ro
       # The landing page. Three static files served by the proxy that is already
       # running — no separate container, and no build step to run first.

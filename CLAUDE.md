@@ -49,7 +49,7 @@ requiring explicit justification.
    paths between the download client and the *arr apps are the single most
    common cause of "why won't it import", and of hardlinking degrading to a copy.
 2. **One filesystem for `torrents/`, `usenet/` and `media/`.** Hardlinks cannot
-   cross filesystems. If they are split, Sonarr/Radarr/Lidarr fall back to
+   cross filesystems. If they are split, Sonarr and Radarr fall back to
    copying: double disk usage, slow imports, and seeding breaks. Nothing warns
    you. `scripts/test-hardlinks.sh` checks both download trees; `SRC_DIR` and
    `DST_DIR` override the pair it tests.
@@ -61,7 +61,7 @@ requiring explicit justification.
    (decisions.md D32).
 4. **Nothing is reachable from the internet except the WireGuard port
    (decisions.md D33).** The stack is VPN-only. Three names are *served* — the
-   landing page, Jellyfin and Jellyseerr, at `{$PUBLIC_DOMAIN}` — but all three
+   landing page, Jellyfin and Seerr, at `{$PUBLIC_DOMAIN}` — but all three
    resolve to the box's LAN address, so reaching them from outside the house
    means bringing up the tunnel first. `PUBLIC_HTTP` in `.env` is the switch;
    at `false`, `setup.sh` opens no HTTP port and actively closes 80/443 if a
@@ -72,13 +72,14 @@ requiring explicit justification.
    compiled in, which is why `caddy/Dockerfile` exists and Caddy is the one
    built image in the stack.
 
-   The other nine apps are excluded *structurally*, not carefully: they have
-   **no route** in `caddy/sites.caddy`, **no DNS record**, and the
-   `DOCKER-USER` chain drops anything arriving off-box. Any one of those alone
-   would do; the point is that adding a route is not enough to expose one by
-   accident, and `validate.sh` fails if any of those names appears in the routes
-   file at all. **That exclusion stays even though nothing is public** — it is
-   what keeps the model true if `PUBLIC_HTTP` is ever flipped back.
+   The other eight apps are kept out of `sites.caddy` entirely. Since D34 they
+   do have names, in `caddy/admin.caddy`, where every block imports the
+   `admin_only` guard that 403s any client outside RFC1918 — so "there is no
+   route" became "the route refuses", one mechanism where there were three.
+   `validate.sh` fails if a block in that file omits the guard, and still fails
+   if one of those names appears in `sites.caddy` at all. **That split stays
+   even though nothing is public** — it is what keeps the model true if
+   `PUBLIC_HTTP` is ever flipped back.
 
    qBittorrent's "run external program on completion" and SABnzbd's
    post-processing scripts are both arbitrary command execution by design — a
@@ -111,7 +112,7 @@ requiring explicit justification.
 5. **Every app enforces authentication, and it is asserted, not assumed.** The
    *arr auth method and scope are pinned as environment variables so they are
    re-applied on every container start; credentials come from `provision.sh`.
-   `scripts/audit-auth.sh` checks all eleven apps against the running stack.
+   `scripts/audit-auth.sh` checks all ten apps against the running stack.
    Never set `AuthenticationRequired` to `DisabledForLocalAddresses`: Caddy
    reaches the backends over the compose bridge, so that exemption applies to
    every proxied request and leaves the admin UIs open (decisions.md D18).
@@ -158,12 +159,14 @@ docker-compose.yml        the stack (deliverable §9.1)
 setup.sh                  host provisioning for Debian (deliverable §9.4)
 caddy/
   Dockerfile              Caddy + the Cloudflare DNS module, for DNS-01
-  Caddyfile               certificate issuance only; imports sites.caddy
-  sites.caddy             the routes, plus the `common` and `private_only` snippets
+  Caddyfile               certificate issuance only; imports the two route files
+  sites.caddy             the three public-capable routes, plus the `common` and
+                          `private_only` snippets
+  admin.caddy             the eight admin routes, each behind `admin_only` (D34)
   site/                   the landing page, served by Caddy at the bare domain
                           — no framework, no build step, no external requests
     index.html            Watch / Request tiles, collapsed admin disclosure,
-                          and the inline SVG sprite of the eleven service marks
+                          and the inline SVG sprite of the ten service marks
     style.css             design tokens; dark-first with a light override
     app.js                link building, reachability probes, pointer FX
 config/
@@ -213,7 +216,7 @@ WireGuard peer keys, and the real remote-access hostname all stay out of git —
 them in `${CONFIG_ROOT}/wg-easy`, which is also why that directory is part of
 the backup set and must not be shared. **`${CONFIG_ROOT}/cleanuparr` is the same
 class** — Cleanuparr is configured by hand rather than by `provision.sh`, so its
-database ends up holding the qBittorrent password and all four *arr API keys.
+database ends up holding the qBittorrent password and every *arr API key.
 Both directories are in the backup archive, which is therefore as sensitive as
 `.env`. The *arr API keys are pinned in `.env` rather than read out of each UI
 (decisions.md D12); treat them as passwords, since a valid key is full control
@@ -231,7 +234,7 @@ One command, needs nothing running:
 ./scripts/validate.sh
 ```
 
-It parses the compose config, asserts mechanically that exactly the eight media
+It parses the compose config, asserts mechanically that exactly the seven media
 services mount `/data` and that they all resolve to **one** source (invariant 1
 and 2, which no runtime error would catch), confirms Gluetun is still commented
 out, checks the exposure invariants (every published port names an interface,
@@ -293,13 +296,23 @@ That last `grep` must print `1`, not `2`.
 
 ## Current state
 
-**Deployed and running on the Debian box since 9 August 2026.** All thirteen
-services are up; `validate.sh` passes 32, `audit-auth.sh` passes 43, and all
-three hardlink runs — torrent, usenet and music — report one inode and two
-names. Twelve production Let's Encrypt certificates are issued over DNS-01. The
-stack is provisioned end to end: root folders, both download clients on every
-*arr, Prowlarr's app links and indexers, Recyclarr's profiles, Jellyseerr wired
-to Radarr and Sonarr, and a verified Eweka connection.
+**Deployed and running on the Debian box since 9 August 2026.** Twelve services;
+both hardlink runs — torrent and usenet — report one inode and two names, and
+production Let's Encrypt certificates are issued over DNS-01 for every name.
+`validate.sh` and `audit-auth.sh` print their own totals; read those rather than
+a number written here, because every count in this file that was load-bearing
+has gone stale at least once. The stack is provisioned end to end: root folders,
+both download clients on every *arr, Prowlarr's app links and indexers,
+Recyclarr's profiles, Seerr wired to Radarr and Sonarr, and a verified Eweka
+connection.
+
+**Two changes are staged and not yet on the box (D37, D38).** Jellyseerr is
+migrated to seerr — abandoned image, patched RCE — and Lidarr is removed with
+music leaving the scope again. The seerr container runs as UID 1000 where the
+old one ran as root, so `${CONFIG_ROOT}/jellyseerr` needs `chown -R 1000:1000`
+before it will start, and the in-place database migration is one-way: rehearse
+it against a copy first (verification.md item 15). Two `.env` variables come out
+on the box: `LIDARR_PORT` and `LIDARR_API_KEY`.
 
 The first deployment found nine defects, all in `setup.sh`, `provision.sh` or
 `audit-auth.sh`, and all of one shape: **the script reported success for
