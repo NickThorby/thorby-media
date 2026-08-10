@@ -289,6 +289,32 @@ fi
 if ! docker compose ps --status running --services 2>/dev/null | grep -qx caddy; then
   skip "caddy is not running — cannot compare the live config to disk"
 else
+  # Two comparisons, because there are two ways to serve the wrong config and
+  # each hides the other.
+  #
+  # First: does the container SEE this repo's files? The bug that produced D39
+  # was a stale bind mount, and the check below cannot catch it on its own —
+  # both `caddy adapt` and the running config would read the same stale file and
+  # agree with each other while disagreeing with everything a human had edited.
+  # The directory mount is what fixes that; this is what would say so.
+  repo_conf=$(cat caddy/conf/Caddyfile caddy/conf/sites.caddy caddy/conf/admin.caddy)
+  ctr_conf=$(docker compose exec -T caddy \
+    sh -c 'cat /etc/caddy/Caddyfile /etc/caddy/sites.caddy /etc/caddy/admin.caddy' 2>/dev/null || true)
+  if [[ -z "$ctr_conf" ]]; then
+    skip "could not read caddy's config files from inside the container"
+  elif [[ "$ctr_conf" == "$repo_conf" ]]; then
+    ok "the container sees the same config files as caddy/conf"
+  else
+    bad "caddy's mounted config DIFFERS from caddy/conf on disk"
+    printf '      %s\n' \
+      "A file bind mount binds an inode, and git replaces files rather than" \
+      "editing them — so a pulled change never reaches the container (D39)." \
+      "docker compose up -d --force-recreate caddy"
+  fi
+
+  # Second: is the running process serving what the container sees, or a config
+  # it read at start and has not been told to re-read?
+  #
   # Compare the set of hostnames each side serves rather than the whole config.
   # The admin API returns the config Caddy is actually running, which carries
   # defaults that `adapt` does not emit, so a full document comparison reports a
