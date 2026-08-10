@@ -715,6 +715,31 @@ Revisit if the 2 TB turns out to be in use for longer than a few months: a
 free-space floor in SABnzbd and a seed-ratio limit in qBittorrent are the two
 cheapest fixes and would both survive the swap.
 
+**The rebuild is also when the names get fixed, and that is deliberate.**
+Several identifiers in this stack are wrong-but-carried, because renaming them
+on a running box is riskier than living with them. A rebuild from an empty disk
+has none of that risk: nothing has to be moved, because nothing exists yet.
+
+Keep this list current — it is the agenda for that day, and an identifier only
+gets to be wrong here if the reason it is carried is written down.
+
+- **`jellyseerr` → `seerr`.** The service key, `container_name` and
+  `${CONFIG_ROOT}/jellyseerr` all still say Jellyseerr; only the image changed
+  (D37). The reason not to rename in place is specific and worth keeping in
+  mind: it means moving the config directory by hand, and a missed `mv` gives a
+  *fresh* seerr with an open setup wizard on the household front door — the D18
+  bootstrap hole, self-inflicted. On a rebuild that hazard does not exist,
+  because a fresh instance is what you are creating anyway.
+- **`PUID`/`PGID` 1001, and the `${PUID:-1000}` fallbacks that contradict it.**
+  1001 only because Debian handed 1000 to `nick` before `media` was created
+  (D32). Creating `media` before the first login account on the rebuilt host
+  gets 1000, after which the compose fallbacks are right rather than
+  misleading — today they document a case that is not this box's.
+
+Nothing on that list is urgent and none of it should be done piecemeal on the
+2 TB box. The whole value is that a rebuild makes each one free, and doing them
+one at a time on a live stack spends the risk without the saving.
+
 ### D28. The DOCKER-USER chain must let containers out, and the block is rewritten rather than skipped
 
 Two defects in D19's implementation, found in review before the box was ever
@@ -1379,6 +1404,10 @@ wizard — the D18 bootstrap hole, self-inflicted, on the household front door.
 The container name is what Caddy proxies to and what `audit-auth.sh` probes;
 none of that is worth a rename. The route was already `seerr.` and needs no
 change. The landing page mark does change, because seerr's is a different logo.
+
+**The rename happens on the 10 TB rebuild**, where it is free: D27 replaces the
+disk and rebuilds from this repo rather than migrating, so there is no config
+directory to move and no missed `mv` to be caught by. It is on the list there.
 
 **Two things about the image are not visible in the diff, and both bite.**
 

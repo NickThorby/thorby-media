@@ -308,6 +308,10 @@ services:
   # the D18 bootstrap hole, self-inflicted. Upstream migrates the database in
   # place on first start, so leaving the path alone is the whole migration.
   #
+  # This gets renamed on the 10 TB rebuild, not before: D27 replaces the disk by
+  # rebuilding from this repo rather than migrating, so there is nothing to move
+  # and the hazard above does not exist. Do not do it piecemeal on the live box.
+  #
   # Two things the image changed that are not visible here:
   #
   #   - It declares `USER node:node`, so it runs as UID 1000 and no longer as
