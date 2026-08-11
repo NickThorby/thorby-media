@@ -251,9 +251,15 @@ provision_qbittorrent() {
   #
   # 'music' was here for Lidarr and left with it (decisions.md D38). Anything
   # already created on the client is not removed — this loop only adds.
+  #
+  # 'prowlarr' is not an *arr category. Prowlarr can push a release straight to
+  # a client from its own search UI, which is how you grab something the *arrs
+  # cannot find -- an anime season pack, say, where a per-episode search would
+  # issue hundreds of indexer queries. Those grabs need somewhere to land that
+  # is still under /data/torrents, so the hardlink into the library works.
   local existing cat
   existing=$(qbt http://localhost:8080/api/v2/torrents/categories)
-  for cat in movies tv anime; do
+  for cat in movies tv anime prowlarr; do
     if jq -e --arg c "$cat" 'has($c)' <<<"$existing" >/dev/null 2>&1; then
       skip "category '$cat' exists"
     else
@@ -317,11 +323,11 @@ provision_sabnzbd() {
   # *arrs name but SABnzbd does not define falls back to the default, so anime
   # would complete into /data/usenet/complete instead of complete/anime.
   local c
-  for c in movies tv anime; do
+  for c in movies tv anime prowlarr; do
     sab -d mode=set_config -d section=categories -d keyword="$c" \
         --data-urlencode "dir=$c" >/dev/null
   done
-  ok "categories movies, tv, anime"
+  ok "categories movies, tv, anime, prowlarr"
 
   # The provider is what actually holds the articles; the indexers only say
   # where they are. Without one, SABnzbd finds everything and downloads nothing.
@@ -667,8 +673,7 @@ add_root_folder() {
 # that is where the releases actually are.
 #
 # The version trails the existing arguments so Sonarr and Radarr's calls are
-# unchanged. Nothing passes v1 today — see the note on add_root_folder for why
-# the parameter stays.
+# unchanged. Prowlarr passes v1.
 upsert_download_client() {
   local app=$1 url=$2 key=$3 name=$4 impl=$5 contract=$6 proto=$7 prio=$8 fields=$9 desc=${10} ver=${11:-v3}
   local existing
@@ -720,6 +725,27 @@ qbit_fields() {
     '[{name:"host",value:$host},{name:"port",value:8080},
       {name:"useSsl",value:false},{name:"username",value:$user},
       {name:"password",value:$pass},{name:$cf,value:$cat}]'
+}
+
+# Prowlarr's client schema is not the *arrs'. There is a single `category`
+# rather than tvCategory/movieCategory, and qBittorrent additionally wants
+# priority/initialState/contentLayout. Passing the *arr shape here silently
+# creates a client with no category, and grabs then land in the client's default
+# save path rather than /data/torrents/prowlarr -- the D29 failure, one layer up.
+prowlarr_qbit_fields() {
+  jq -n --arg host "$QBIT_HOST" --arg user "$QBIT_USER" --arg pass "$QBIT_PASS" \
+    '[{name:"host",value:$host},{name:"port",value:8080},
+      {name:"useSsl",value:false},{name:"username",value:$user},
+      {name:"password",value:$pass},{name:"category",value:"prowlarr"},
+      {name:"priority",value:0},{name:"initialState",value:0},
+      {name:"contentLayout",value:0}]'
+}
+
+prowlarr_sab_fields() {
+  jq -n --arg host "$SAB_HOST" --arg key "$SAB_API_KEY" \
+    '[{name:"host",value:$host},{name:"port",value:8080},
+      {name:"useSsl",value:false},{name:"apiKey",value:$key},
+      {name:"category",value:"prowlarr"},{name:"priority",value:-100}]'
 }
 
 sab_fields() {
@@ -869,6 +895,22 @@ upsert_download_client Radarr "$RADARR_URL" "$RADARR_API_KEY" \
 ensure_hardlinks Radarr "$RADARR_URL" "$RADARR_API_KEY"
 
 step "Prowlarr"
+
+# Prowlarr keeps its own download clients, separate from the *arrs'. Without
+# them its search UI can find a release and then refuses to grab it, with
+# "no download client is configured" -- which reads like an indexer problem and
+# is not. This was missed until someone tried to grab a season pack by hand.
+upsert_download_client Prowlarr "$PROWLARR_URL" "$PROWLARR_API_KEY" \
+  qBittorrent QBittorrent QBittorrentSettings torrent 1 \
+  "$(prowlarr_qbit_fields)" "qbittorrent:8080, category 'prowlarr'" v1
+if [[ -n "$SAB_API_KEY" ]]; then
+  upsert_download_client Prowlarr "$PROWLARR_URL" "$PROWLARR_API_KEY" \
+    SABnzbd Sabnzbd SabnzbdSettings usenet 1 \
+    "$(prowlarr_sab_fields)" "sabnzbd:8080, category 'prowlarr'" v1
+else
+  skip "Prowlarr: SABnzbd key unavailable, skipping its download client"
+fi
+
 add_prowlarr_app Sonarr Sonarr SonarrSettings "http://sonarr:8989" "$SONARR_API_KEY"
 add_prowlarr_app Radarr Radarr RadarrSettings "http://radarr:7878" "$RADARR_API_KEY"
 # Usenet indexers are private and useless without a key, so skip them until
