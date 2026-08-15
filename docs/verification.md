@@ -323,55 +323,93 @@ written assuming UFW was what enforced it.
 
 - [ ] Passes
 
-## 8. Machine boots unattended and all containers start after a hard power cut
+## 8. The stack *works* after a hard power cut
 
-**A graceful reboot is not the full test, but run it first** — it exercises the
-same race and it is the one that has actually bitten (D36). On this box Docker
-started three seconds before the WiFi associated, and two services that bind a
-specific address came up broken while reporting healthy.
+**Rewritten after two real outages, because the original check passed both
+times while the stack was broken.** "Every container is running" is not the
+test. Both failures presented as a fully healthy `docker compose ps`:
 
-Measured after the D36 fix, 9 Aug 2026:
+| Outage | What broke | Presented as |
+|---|---|---|
+| 9 Aug 2026 | Caddy published no ports, wg-easy's web UI dead, container DNS broken (D36) | 12/12 up, wg-easy **healthy** |
+| 15 Aug 2026 | Every container bound an empty `/data` on the SSD (D39) | 12/12 healthy, disk mounted, 765 GB present |
 
-```
-12:41:31  docker.service starts   <- ExecStartPre begins waiting for the address
-12:41:36  wlp10s0 associated      <- address appears
-12:41:43  dockerd "Starting up"   <- held 12s, then proceeded
-```
+Docker started before the WiFi had an address in the first case, and before the
+media disk had spun up in the second. Healthchecks passed throughout, because
+each app was running correctly — against nothing.
 
-All twelve containers healthy, `docker port caddy` populated, 80/443/51821
-listening, every name answering, and container DNS working without a daemon
-restart. Check all of those, not just `docker compose ps` — the failure mode
-this fix addresses looked perfectly healthy in `ps`.
+So the acceptance criterion is **play a file**, from Jellyfin and from Infuse.
+Everything below is diagnosis for when that fails.
 
-Note the media disk came back as `/dev/sdb1` having been `/dev/sda1` on the
-previous boot. Device names shuffle; the fstab entries are by UUID for exactly
-that reason, and `findmnt` is the check.
-
-- [x] Graceful reboot — passes (9 Aug 2026)
-
-Then the real one. Not a graceful reboot — cut power at the wall, restore it,
-and touch nothing.
+### The functional check, first
 
 ```bash
-uptime
-docker compose -f ~/thorby-media/docker-compose.yml ps
+# The one that matters. Anything else can look fine while this is broken.
+#   - play an episode in Jellyfin
+#   - play one in Infuse on the Apple TV
 ```
 
-(`/opt/mediaserver` is `CONFIG_ROOT` — the app databases. The repo is a separate
-checkout, and its path is baked into the backup unit, so do not move it.)
+### Then the four things that have actually failed
 
-Every service `running`. This exercises BIOS `Restore on AC Power Loss: Power
-On` (§1.1), `systemctl is-enabled docker`, the fstab mounts coming up in the
-right order, and `restart: unless-stopped`.
+**1. Do the containers see the same `/data` the host does?** This is D39, and it
+is invisible to `df`, `findmnt` and `ps` — all three report correctly on the
+host while the containers hold a stale bind.
+
+```bash
+stat -c 'host      /data device=%d' /data
+docker compose exec -T jellyfin stat -c 'container /data device=%d' /data
+```
+
+**The device numbers must match.** If they differ, every container is bound to
+the empty mountpoint on the root filesystem. Recover with `docker compose down
+&& docker compose up -d` — a `restart` will not do it, because the bind is
+resolved at container *creation*.
 
 ```bash
 findmnt /mnt/disk1 && findmnt /data
 ```
 
-Both mounted. A missing bind mount here is how containers end up writing into an
-empty `/data` on the SSD.
+**2. Did Caddy actually publish its ports?** It binds a specific address and
+Docker silently leaves the container running without the bindings if that
+address is absent (D36).
 
-- [ ] Passes
+```bash
+docker port caddy                 # must list 80 and 443
+ss -lnt | grep -E ':(80|443|51821)'
+```
+
+**3. Is the wg-easy UI serving, not just the tunnel?** Its healthcheck now tests
+both, but check independently — this is the remote front door.
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://<lan-ip>:51821/     # 302
+```
+
+**4. Does container DNS work without a daemon restart?**
+
+```bash
+docker compose exec -T sonarr getent hosts github.com
+```
+
+### And the ordinary ones
+
+```bash
+uptime
+docker compose -f ~/thorby-media/docker-compose.yml ps
+sudo iptables -S DOCKER-USER | wc -l      # 8 rules, ending in DROP
+```
+
+This exercises BIOS `Restore on AC Power Loss: Power On` (§1.1),
+`systemctl is-enabled docker`, `RequiresMountsFor` on the Docker drop-in, and
+`restart: unless-stopped`.
+
+Note the media disk has come back as `/dev/sda1` and `/dev/sdb1` on different
+boots. Device names shuffle; the fstab entries are by UUID for exactly that
+reason.
+
+- [x] Graceful reboot — passes (9 Aug 2026, after D36)
+- [ ] Hard power cut — **not yet passed with both fixes applied.** The 15 Aug
+      cut predates D39; re-run it once that drop-in is in place.
 
 ## 9. Unattended security updates and SSH hardening are live
 
