@@ -1538,6 +1538,61 @@ because this deployment removed one.
 
 ---
 
+## D39. Docker must wait for the mount, not just the address
+
+A power cut, and every client got "fatal error" on playback while
+`docker compose ps` showed twelve healthy containers and `df` showed the disk
+mounted with 765 GB on it. Both readings were true. The stack was still broken.
+
+**The mechanism.** Docker resolves a bind mount when the container starts, and
+never re-resolves it. `/mnt/disk1` is a spinning drive that has to spin up, and
+`/data` is a bind mount on top of it, so on a cold boot both appear later than
+Docker does. Every container therefore bound the **empty `/data` directory on
+the root filesystem** — the mountpoint itself, not what is mounted over it. The
+host mounting the real disk a few seconds later changes nothing: mount
+propagation is `rprivate`, so it never reaches the container's namespace.
+
+Measured on the target:
+
+```
+host      /data   device=2049   media torrents usenet   765G
+container /data   device=2066   (empty)                 4.0K
+docker.service RequiresMountsFor:   (empty)
+```
+
+Jellyfin's log said `Could not find file '/data/media/tv/Grimm/...'`, which
+reads like missing media and is not.
+
+**Why nothing else caught it.** Every healthcheck passed, because each app was
+running perfectly well against an empty directory. D36 taught this lesson once
+already for the network and the fix it produced — an `ExecStartPre` waiting for
+an address — does not cover mounts. This is the same class of failure with a
+different dependency, which is why the drop-in now carries both.
+
+**The fix is `RequiresMountsFor`,** not another timed wait. systemd knows when a
+mount unit is up; guessing at it with a sleep loop would be strictly worse. It
+generates both `Requires=` and `After=` on the mount units for `/mnt/disk1` and
+`/data`.
+
+**The cost, accepted knowingly.** If the media disk genuinely fails, Docker will
+now refuse to start at all — and that takes wg-easy with it, so there is no
+remote access to diagnose the box that just lost its disk. SSH still works from
+the LAN. That is the right trade: the alternative is what happened here, where
+the *arrs would happily import into an empty root-filesystem directory. D32
+noted the mountpoint being root-owned is what stops them writing there, and that
+protection held — nothing was written, the SSD did not fill — but it is a
+property of one directory's ownership, not a guarantee.
+
+**Recovery, when it happens again before this is applied:** `docker compose
+down && docker compose up -d`. A restart is not enough — the bind is resolved at
+container creation, so the containers must be recreated.
+
+**Verification item 8 is now genuinely exercised**, twice, by real power cuts
+rather than a graceful reboot. The first found D36. This one found D39. Both
+presented as a healthy stack.
+
+---
+
 ## Open
 
 Each of these blocks or shapes a deliverable. Answers go here once settled.

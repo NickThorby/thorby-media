@@ -713,13 +713,25 @@ configure_docker_boot_order() {
   run mkdir -p "$dir"
 
   write_file "$dir/10-wait-for-address.conf" 0644 <<EOF
-# Managed by setup.sh -- decisions.md D36.
+# Managed by setup.sh -- decisions.md D36, D39.
 #
-# network-online.target is reached before this box has an address, so ordering
-# against it is not enough. Wait for the address Caddy and wg-easy bind.
+# Two boot races, both of which produced a stack that reported healthy while
+# being broken.
+#
+# 1. network-online.target is reached before this box has an address, so
+#    ordering against it is not enough. Caddy and wg-easy each bind a specific
+#    address and die if it is absent (D36).
+#
+# 2. RequiresMountsFor. Docker resolves a bind mount when the container starts
+#    and never re-resolves it, so if ${MOUNT_POINT} and ${BIND_TARGET} are not
+#    mounted yet, every container binds the empty ${BIND_TARGET} directory on
+#    the root filesystem instead -- permanently, until it is recreated. The
+#    media disk is a spinning drive that has to spin up, so it loses this race
+#    routinely after a power cut (D39).
 [Unit]
 After=network-online.target
 Wants=network-online.target
+RequiresMountsFor=${MOUNT_POINT} ${BIND_TARGET}
 
 [Service]
 ExecStartPre=/bin/sh -c 'i=0; while [ \$i -lt 60 ]; do ip -4 -o addr show | grep -qw "${addr}" && exit 0; i=\$((i+1)); sleep 1; done; exit 0'
