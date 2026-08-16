@@ -318,9 +318,12 @@ connection.
 
 **Two changes are staged and not yet on the box (D37, D38).** Jellyseerr is
 migrated to seerr — abandoned image, patched RCE — and Lidarr is removed with
-music leaving the scope again. The seerr container runs as UID 1000 where the
-old one ran as root, so `${CONFIG_ROOT}/jellyseerr` needs `chown -R 1000:1000`
-before it will start, and the in-place database migration is one-way: rehearse
+music leaving the scope again. The seerr image ships `user: node:node`, which is
+UID 1000, where the old one ran as root — and D32 moved this box's service user
+to 1001, so seerr could read `${CONFIG_ROOT}/jellyseerr` and not write it. It
+crash-looped on its own log file and Caddy served 502 for the name. It is
+therefore pinned to `${PUID}:${PGID}` in compose rather than the config tree
+being chowned to 1000 (D40), and the in-place database migration is one-way: rehearse
 it against a copy first (verification.md item 15). Two `.env` variables come out
 on the box: `LIDARR_PORT` and `LIDARR_API_KEY`.
 

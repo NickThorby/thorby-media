@@ -1593,6 +1593,41 @@ presented as a healthy stack.
 
 ---
 
+## D40. seerr runs as PUID/PGID, not the image's own uid
+
+The seerr migration (D37) landed and the name served 502. seerr had been
+restart-looping, so it was absent from Docker's DNS and Caddy had nothing to
+dial: `dial tcp: lookup jellyseerr on 127.0.0.11:53: no such host`. The 502 was
+a symptom two services away from the cause.
+
+```
+image: ghcr.io/seerr-team/seerr:latest   user = node:node  -> uid 1000
+/opt/mediaserver/jellyseerr              media:media       -> 1001:1001, 755
+EACCES  open '/app/config/logs/seerr-2026-08-16.log'
+```
+
+Mode 755 is world-*readable*, so seerr started, read its settings, and then died
+the moment it tried to write a log line.
+
+**This is D37 meeting D32.** The migration note said to `chown -R 1000:1000`,
+which was correct when it was written and wrong by the time it ran: D32 moved
+the service user to 1001 because Debian had already given 1000 to the
+administrator. Following the note literally would have handed a service's entire
+state directory to the human account.
+
+So the fix is `user: "${PUID:-1000}:${PGID:-1000}"` on the service. That keeps
+one uid across the stack, which is what invariant 3 is for, and needs no chown
+of ~800 MB of config. The `:-1000` fallback stays for the same reason it does
+elsewhere: it describes the ordinary case, and `.env` supplies this box's.
+
+**Worth noting about the failure shape.** The healthcheck could not catch this —
+the container never got far enough to answer, so `ps` showed `Restarting` and
+was accurate for once. What was misleading was the *reported* symptom: a 502
+from Caddy names the proxy, not the app that will not start.
+
+
+---
+
 ## Open
 
 Each of these blocks or shapes a deliverable. Answers go here once settled.

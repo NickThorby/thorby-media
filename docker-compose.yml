@@ -327,6 +327,16 @@ services:
   jellyseerr:
     image: ghcr.io/seerr-team/seerr:latest
     init: true
+    # The image ships `user: node:node`, which is uid 1000. Every other service
+    # here runs as PUID/PGID, which D32 moved to 1001 because Debian had already
+    # given 1000 to the administrator -- so seerr could read ${CONFIG_ROOT}
+    # (mode 755) and not write it, and died on its own log file in a restart
+    # loop. Caddy then had no upstream to resolve and served 502.
+    #
+    # Pinned to PUID/PGID rather than chowning the config tree to 1000: the
+    # alternative hands a service's state directory to the human account, and
+    # invariant 3 exists precisely so there is one uid across the stack (D40).
+    user: "${PUID:-1000}:${PGID:-1000}"
     container_name: jellyseerr
     restart: unless-stopped
     logging: *logging
