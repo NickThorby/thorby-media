@@ -107,7 +107,9 @@ requiring explicit justification.
    drops everything the containers try to reach — DNS first, which takes the
    whole stack with it and stops Caddy ever reaching Let's Encrypt. The two
    `br+`/`docker0` RETURNs exist for that and are not optional (decisions.md
-   D28). Reason about any change to that chain in both directions.
+   D28). Reason about any change to that chain in both directions. The same
+   applies to a guest that isn't Docker's: the `waydroid0` RETURN is for the
+   Android container feh-dumper runs on this box (D41).
 
 5. **Every app enforces authentication, and it is asserted, not assumed.** The
    *arr auth method and scope are pinned as environment variables so they are

@@ -1625,6 +1625,50 @@ the container never got far enough to answer, so `ps` showed `Restarting` and
 was accurate for once. What was misleading was the *reported* symptom: a 502
 from Caddy names the proxy, not the app that will not start.
 
+---
+
+## D41. The Waydroid bridge gets its own RETURN in DOCKER-USER
+
+The box also runs a Waydroid (Android) container for the separate feh-dumper
+project, on its own `waydroid0` bridge at `192.168.240.0/24`. On 19 October 2026
+Fire Emblem Heroes inside it showed a connection error. Inside Android, the
+gateway answered and names resolved, but nothing beyond the box did.
+
+```
+Chain DOCKER-USER
+    7073K RETURN  ctstate RELATED,ESTABLISHED
+     352K RETURN  -i br+  -s 172.16.0.0/12
+        ...
+        2 RETURN  -s 192.168.0.0/24
+      460 DROP                               <- the Android container's egress
+```
+
+**This is D28 again, for a guest that isn't Docker's.** DOCKER-USER is jumped
+from the top of `FORWARD`, so it sees every forwarded packet on the host, not
+just container traffic. Waydroid had only ever worked because the hand-inserted
+`FORWARD -i waydroid0 -j ACCEPT` rules from its setup happened to sit above
+Docker's jumps. A docker-ce upgrade that day rebuilt `FORWARD` with
+`DOCKER-USER` first. A reboot would have done the same, since those rules were
+never persistent.
+
+The failure looks like something else. DHCP and DNS are INPUT to the host, so
+they kept working. The app reported its own servers as unreachable.
+
+So `-A DOCKER-USER -i waydroid0 -s 192.168.240.0/24 -j RETURN` sits next to the
+`wg0` and `lo` exceptions. It is scoped by interface **and** source, for D28's
+reason. In the other direction nothing is needed: replies into `waydroid0` are
+ESTABLISHED and leave through the first rule, and nothing on the LAN should
+initiate connections into the Android container.
+
+The feh-dumper side owns the INPUT and FORWARD half: `ufw allow in on waydroid0`
+and `ufw route allow in on waydroid0`, from its `setup/00-host-prereqs.sh`. It
+deliberately has no `route allow out on waydroid0`, which would have let
+containers here open connections to Android's unauthenticated adbd.
+
+Verify after any reboot or Docker upgrade with `iptables -L DOCKER-USER -n -v`,
+looking for the `192.168.240.0/24` RETURN above the DROP. The visible symptom of
+it missing is FEH's connection error, not anything in this stack.
+
 
 ---
 

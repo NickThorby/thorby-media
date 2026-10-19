@@ -1030,6 +1030,14 @@ ${marker}
 # never reaches this chain (decisions.md D26).
 -A DOCKER-USER -i wg0 -j RETURN
 -A DOCKER-USER -i lo -j RETURN
+# The Android (Waydroid) container that feh-dumper runs on this box, on its own
+# waydroid0 bridge. This chain sees every forwarded packet, not just Docker's,
+# so without this the container's egress dies at the DROP below. DHCP and DNS
+# still work, since they are INPUT to the host, which makes it look like a game
+# server outage (decisions.md D41). Interface AND source, like the bridge
+# rules above; 192.168.240.0/24 is waydroid-net.sh's default subnet. Inbound to
+# waydroid0 needs nothing: replies are covered by the conntrack RETURN.
+-A DOCKER-USER -i waydroid0 -s 192.168.240.0/24 -j RETURN
 -A DOCKER-USER -s ${LAN_SUBNET} -j RETURN
 ${public_rules}
 # Anything else reaching a container from off-box is dropped. Without the
