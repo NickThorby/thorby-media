@@ -270,6 +270,31 @@ else
   tail -5 <<<"$out" | indent
 fi
 
+# Every upstream has to be something on the compose network. `caddy validate`
+# cannot tell: an upstream is a hostname looked up per request, so a stale one —
+# a renamed service, a deleted one — passes validation and then answers 502 on
+# a stack that reports healthy. The jellyseerr -> seerr rename (D27) is the change
+# that would have left one. Compose DNS answers to both the service key and
+# container_name, so either counts.
+#
+# An upstream written as a `{$VAR}` placeholder is skipped, not checked: that is
+# the wg route, and it is addressed by host on purpose — wg-easy runs with host
+# networking, so it has no name on the bridge (D26). ADMIN_HOST, the variable it
+# uses, is required separately in the Exposure section.
+names=$(jq -r '[.services | to_entries[] | .key, (.value.container_name // empty)]
+               | unique | .[]' <<<"$rendered" | LC_ALL=C sort -u)
+upstreams=$(grep -hE '^[[:space:]]*reverse_proxy[[:space:]]' caddy/conf/sites.caddy caddy/conf/admin.caddy \
+            | awk '$2 !~ /^\{\$/ {print $2}' | sed -E 's#^https?://##; s#:[0-9]+$##' | LC_ALL=C sort -u)
+missing=$(LC_ALL=C comm -23 <(echo "$upstreams") <(echo "$names"))
+if [[ -z "$upstreams" ]]; then
+  bad "found no reverse_proxy upstreams in sites.caddy or admin.caddy"
+elif [[ -z "$missing" ]]; then
+  ok "every reverse_proxy upstream is a compose service ($(wc -l <<<"$upstreams" | tr -d ' '))"
+else
+  bad "reverse_proxy upstreams with no compose service behind them: $(tr '\n' ' ' <<<"$missing")"
+  printf '      %s\n' "Each would 502. Match it to a service key or container_name in docker-compose.yml."
+fi
+
 # Is the RUNNING Caddy serving the config that is on disk?
 #
 # Caddy reads its config once, at start. Editing a route file changes nothing

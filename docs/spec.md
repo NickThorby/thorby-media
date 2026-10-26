@@ -347,8 +347,7 @@ ones served if `PUBLIC_HTTP` is ever set true:
 
 - `media.thorby.tech` -> the landing page (static, served by Caddy itself)
 - `jellyfin.media.thorby.tech` -> `jellyfin:8096`
-- `seerr.media.thorby.tech` -> `jellyseerr:5055` (the container kept its old
-  name through the seerr rename — decisions.md D37)
+- `seerr.media.thorby.tech` -> `seerr:5055`
 
 `caddy/conf/admin.caddy` — the eight that must never be. Sonarr, Radarr, Prowlarr,
 Bazarr, qBittorrent (`qbit.`), SABnzbd (`sab.`), Cleanuparr and the wg-easy UI

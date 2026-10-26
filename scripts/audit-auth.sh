@@ -341,14 +341,15 @@ fi
 
 # ─── Seerr ───────────────────────────────────────────────────────────────────
 #
-# The container is still called jellyseerr and the image is seerr: the service
-# kept its name through the rename so ${CONFIG_ROOT} did not have to move
-# (decisions.md D37). Both probes below are anonymous by design.
+# Both probes below are anonymous by design. The service is `seerr`; until the
+# 10 TB rebuild it was still called jellyseerr (decisions.md D27, D37), and a
+# stale name here does not fail — it skips, and the Seerr audit silently stops
+# running.
 
 echo
 echo "Seerr"
 
-if ! up jellyseerr; then
+if ! up seerr; then
   skip "seerr is not running"
 else
   init=$(curl -fsS --max-time 8 "$SEERR_URL/api/v1/settings/public" 2>/dev/null \

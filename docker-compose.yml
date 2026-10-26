@@ -293,38 +293,27 @@ services:
   #
   # No /data mount: it only ever talks to APIs, never to media files.
   #
-  # ── The image is seerr, and the service is still called jellyseerr ──────────
+  # ── seerr, formerly Jellyseerr ─────────────────────────────────────────────
   #
   # Jellyseerr was renamed to seerr. `fallenbagel/jellyseerr:latest` stopped
   # being published in August 2025 and a path-traversal-to-RCE in the image proxy
   # was patched upstream in v3.4.0 — so :latest sat twelve months stale on the
-  # household-facing route without ever failing loudly. That is D7's one known
-  # counter-example, since that convention assumes the tag keeps moving
+  # household-facing route without ever failing loudly. That is one of D7's
+  # counter-examples, since that convention assumes the tag keeps moving
   # (decisions.md D37).
   #
-  # The service, container and ${CONFIG_ROOT} directory keep the old name on
-  # purpose. Renaming the directory means moving it on the box by hand, and a
-  # missed `mv` gives a FRESH seerr with an open setup wizard on the front door —
-  # the D18 bootstrap hole, self-inflicted. Upstream migrates the database in
-  # place on first start, so leaving the path alone is the whole migration.
+  # The service, container and ${CONFIG_ROOT} directory kept the old name until
+  # the 10 TB rebuild, because renaming the directory on a live box meant moving
+  # it by hand, and a missed `mv` gives a FRESH seerr with an open setup wizard
+  # on the front door. The rebuild starts every app on an empty config tree, so
+  # that hazard did not exist and the rename was free (D27).
   #
-  # This gets renamed on the 10 TB rebuild, not before: D27 replaces the disk by
-  # rebuilding from this repo rather than migrating, so there is nothing to move
-  # and the hazard above does not exist. Do not do it piecemeal on the live box.
-  #
-  # Two things the image changed that are not visible here:
-  #
-  #   - It declares `USER node:node`, so it runs as UID 1000 and no longer as
-  #     root. ${CONFIG_ROOT}/jellyseerr has to be owned by 1000 or the container
-  #     crashes on a permission denied it cannot recover from. That is upstream's
-  #     fixed UID, not PUID — do not add `user:` here to reconcile it with the
-  #     rest of the stack, because the image's own files are node-owned.
-  #   - It no longer ships an init process, hence `init: true`. Without it a
-  #     crashed child is never reaped and the container accumulates zombies.
+  # The image no longer ships an init process, hence `init: true`. Without it a
+  # crashed child is never reaped and the container accumulates zombies.
   #
   # The healthcheck still uses wget rather than curl: the base is node:alpine,
   # so busybox wget is present and curl is not.
-  jellyseerr:
+  seerr:
     image: ghcr.io/seerr-team/seerr:latest
     init: true
     # The image ships `user: node:node`, which is uid 1000. Every other service
@@ -337,7 +326,7 @@ services:
     # alternative hands a service's state directory to the human account, and
     # invariant 3 exists precisely so there is one uid across the stack (D40).
     user: "${PUID:-1000}:${PGID:-1000}"
-    container_name: jellyseerr
+    container_name: seerr
     restart: unless-stopped
     logging: *logging
     security_opt: *security
@@ -351,7 +340,7 @@ services:
       TZ: ${TZ:-Africa/Johannesburg}
       LOG_LEVEL: info
     volumes:
-      - ${CONFIG_ROOT:-/opt/mediaserver}/jellyseerr:/app/config
+      - ${CONFIG_ROOT:-/opt/mediaserver}/seerr:/app/config
     ports:
       - "${BIND_ADDR:?BIND_ADDR is unset in .env — see the note above the services block}:${SEERR_PORT:-5055}:5055"
     # Seerr reads libraries from Jellyfin and pushes requests into the *arrs, so
@@ -493,7 +482,7 @@ services:
     depends_on:
       jellyfin:
         condition: service_healthy
-      jellyseerr:
+      seerr:
         condition: service_healthy
 
   # ── Remote access ──────────────────────────────────────────────────────────

@@ -435,11 +435,11 @@ provision_bazarr() {
 
 # ─── Seerr ───────────────────────────────────────────────────────────────────
 
-provision_jellyseerr() {
+provision_seerr() {
   step "Seerr"
 
-  docker compose ps --status running --services | grep -qx jellyseerr || {
-    warn "jellyseerr is not running, skipping"; return 0
+  docker compose ps --status running --services | grep -qx seerr || {
+    warn "seerr is not running, skipping"; return 0
   }
 
   local initialized
@@ -468,7 +468,7 @@ provision_jellyseerr() {
   ok "setup complete — Jellyfin connected"
 
   local skey seerr
-  skey=$(docker compose exec -T jellyseerr \
+  skey=$(docker compose exec -T seerr \
     sh -c 'cat /app/config/settings.json' | jq -r '.main.apiKey')
   [[ -n "$skey" && "$skey" != "null" ]] || { warn "could not read Seerr's API key"; return 0; }
   seerr="http://127.0.0.1:${SEERR_PORT:-5055}"
@@ -872,7 +872,7 @@ ensure_arr_auth Prowlarr "$PROWLARR_URL" "$PROWLARR_API_KEY" v1
 provision_qbittorrent
 provision_sabnzbd
 provision_bazarr
-provision_jellyseerr
+provision_seerr
 
 step "Sonarr"
 add_root_folder Sonarr "$SONARR_URL" "$SONARR_API_KEY" /data/media/tv

@@ -122,5 +122,5 @@ jellyfin.{$PUBLIC_DOMAIN} {
 # Requests — where everyone who is not the administrator should start.
 seerr.{$PUBLIC_DOMAIN} {
 	import common
-	reverse_proxy jellyseerr:5055
+	reverse_proxy seerr:5055
 }

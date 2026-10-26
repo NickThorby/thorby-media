@@ -14,9 +14,10 @@ it later.
 > `validate.sh` and `audit-auth.sh` print their own totals — read those rather
 > than a number here, which is the kind that goes stale silently.
 >
-> **Seerr replaced Jellyseerr, and Lidarr was removed** (D37, D38). The seerr
-> container runs as UID 1000, so `${CONFIG_ROOT}/jellyseerr` has to be chowned
-> before it will start.
+> **Seerr replaced Jellyseerr, and Lidarr was removed** (D37, D38). The
+> service, container and config directory are now all called `seerr` (D27).
+> seerr runs as `PUID:PGID` like everything else, not as the image's own UID
+> 1000, so no config directory needs chowning (D40).
 >
 > **The access model changed during bring-up.** There is no public door: the
 > router forwards the WireGuard port and nothing else, every name resolves to
@@ -425,11 +426,13 @@ takes everyone offline at once.
 
 ### 9. Seerr — `:5055`
 
-The front door for everyone who is not you. The image is `ghcr.io/seerr-team/seerr`; the
-service, container and config directory are still called `jellyseerr`, because
-renaming the directory on the box is how you end up with a fresh instance and an
-open setup wizard (decisions.md D37).
- **Do step 8 first** — the wizard asks
+The front door for everyone who is not you. The image is
+`ghcr.io/seerr-team/seerr`, and the service, container and config directory are
+all `seerr` since the 10 TB rebuild (decisions.md D27, D37). Before that they
+kept the Jellyseerr name, because renaming the directory on a live box is how
+you end up with a fresh instance and an open setup wizard.
+
+**Do step 8 first** — the wizard asks
 you to select Jellyfin libraries and offers nothing if none exist, which looks
 like a broken Continue button.
 
