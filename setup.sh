@@ -525,18 +525,82 @@ configure_fstab() {
       ok "backed up /etc/fstab to /etc/fstab.bak"
     fi
 
-    if grep -qE "^[^#]*[[:space:]]${MOUNT_POINT}[[:space:]]" /etc/fstab; then
-      ok "fstab entry for $MOUNT_POINT already present"
-    else
+    # An existing line is compared, not merely found. Its UUID is the disk it
+    # was written for, and the case that needs this step most -- swapping the
+    # media disk (spec §3.2, decisions.md D27) -- is exactly the one where an
+    # entry exists and names the wrong disk. This used to report "already
+    # present" and move on: the fstab kept the dead disk's UUID, nothing
+    # mounted, Docker refused to start without its mount (D39), and every
+    # line this script printed said success.
+    local lines
+    lines=$(awk -v m="$MOUNT_POINT" '$1 !~ /^#/ && $2 == m { print NR }' /etc/fstab)
+    if [[ -z "$lines" ]]; then
       if $DRY_RUN; then
         printf '  \033[36m[dry-run]\033[0m append to /etc/fstab:\n      | UUID=%s  %s  ext4  defaults,noatime  0  2\n' "$uuid" "$MOUNT_POINT"
       else
         printf 'UUID=%s  %s  ext4  defaults,noatime  0  2\n' "$uuid" "$MOUNT_POINT" >> /etc/fstab
         ok "added $MOUNT_POINT to fstab"
       fi
+    elif [[ "$lines" == *$'\n'* ]]; then
+      die "/etc/fstab has more than one line mounting $MOUNT_POINT (lines $(tr '\n' ' ' <<<"$lines")).
+       Fix it by hand; this script will not guess which one is meant."
+    else
+      local spec
+      spec=$(awk -v n="$lines" 'NR == n { print $1 }' /etc/fstab)
+      if [[ "$spec" == "UUID=$uuid" ]]; then
+        ok "fstab entry for $MOUNT_POINT already present"
+      elif [[ "$spec" != UUID=* ]]; then
+        die "/etc/fstab mounts $MOUNT_POINT from $spec, not a UUID. Device names move
+       between boots (spec §3.2). Change it to UUID=$uuid by hand."
+      else
+        # Refuse while the old disk is still the one mounted there. The rewrite
+        # would succeed, `mount -a` would find $MOUNT_POINT already mounted and do
+        # nothing, and the step would end reporting a disk it never mounted.
+        local mounted
+        mounted=$(findmnt -n -o UUID --mountpoint "$MOUNT_POINT" 2>/dev/null || true)
+        if [[ -n "$mounted" && "$mounted" != "$uuid" ]]; then
+          if $DRY_RUN; then
+            warn "$MOUNT_POINT is mounted from UUID=$mounted — a real run stops here until"
+            warn "  it is unmounted:  docker compose down && umount $BIND_TARGET $MOUNT_POINT"
+          else
+            die "$MOUNT_POINT is mounted from UUID=$mounted, not $DISK_DEV.
+       Stop the stack and unmount it first:
+         docker compose down && umount $BIND_TARGET $MOUNT_POINT"
+          fi
+        fi
+
+        # Only the first field changes, so the options survive -- including the
+        # nofail this box carries by hand and this script does not write
+        # (decisions.md D32).
+        local old_line new_line
+        old_line=$(sed -n "${lines}p" /etc/fstab)
+        new_line="UUID=${uuid}${old_line#*"$spec"}"
+        new_line="${old_line%%"$spec"*}${new_line}"
+        if $DRY_RUN; then
+          printf '  \033[36m[dry-run]\033[0m rewrite /etc/fstab line %s for the new disk:\n      - %s\n      + %s\n' \
+            "$lines" "$old_line" "$new_line"
+        else
+          # Timestamped, because /etc/fstab.bak above is written once, on the
+          # first run, and so is no use as the copy from just before this edit.
+          local backup
+          backup="/etc/fstab.bak.$(date +%Y%m%d-%H%M%S)"
+          cp /etc/fstab "$backup"
+          ok "backed up /etc/fstab to $backup"
+          # Through ENVIRON, not -v: awk processes escapes in -v values, and
+          # fstab escapes spaces in paths as \040.
+          local tmp
+          tmp=$(mktemp)
+          NEW_LINE="$new_line" awk -v n="$lines" 'NR == n { print ENVIRON["NEW_LINE"]; next } { print }' \
+            /etc/fstab > "$tmp"
+          # Written through the existing file so its mode and owner survive.
+          cat "$tmp" > /etc/fstab
+          rm -f "$tmp"
+          ok "fstab: $MOUNT_POINT now mounts UUID=$uuid (was ${spec#UUID=})"
+        fi
+      fi
     fi
 
-    run mkdir -p "$DATA_DIR" "$BIND_TARGET"
+    run mkdir -p "$BIND_TARGET"
 
     # The bind mount is deliberate indirection: swapping it for a mergerfs pool
     # later needs no container changes and breaks no hardlinks (spec §3.1).
@@ -551,10 +615,29 @@ configure_fstab() {
       fi
     fi
 
-    if ! $DRY_RUN; then
+    # The disk is mounted before $DATA_DIR is created, not after. Created first,
+    # it lands on the root filesystem inside the empty mount point, the disk then
+    # mounts over it, and the bind line has no source on a freshly formatted
+    # disk -- so `mount -a` fails, which under set -e stops the script before the
+    # firewall.
+    if $DRY_RUN; then
+      run mount "$MOUNT_POINT"
+      run mkdir -p "$DATA_DIR"
+      run mount -a
+    else
       findmnt --verify --verbose >/dev/null 2>&1 || warn "findmnt reports issues with /etc/fstab — review before rebooting"
+      findmnt --mountpoint "$MOUNT_POINT" >/dev/null 2>&1 || mount "$MOUNT_POINT"
+      mkdir -p "$DATA_DIR"
       mount -a
-      ok "mounted everything in fstab"
+
+      # Checked, not assumed: `mount -a` succeeds when there is nothing left to
+      # mount, which includes the case where the wrong disk is already there.
+      local m got
+      for m in "$MOUNT_POINT" "$BIND_TARGET"; do
+        got=$(findmnt -n -o UUID --mountpoint "$m" 2>/dev/null || true)
+        [[ "$got" == "$uuid" ]] || die "$m is mounted from ${got:-nothing}, expected UUID=$uuid ($DISK_DEV)."
+      done
+      ok "$MOUNT_POINT and $BIND_TARGET are both on $DISK_DEV (UUID=$uuid)"
     fi
   fi
 }
