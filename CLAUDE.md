@@ -25,7 +25,7 @@ until the box was built and was removed with it.
 | OS | Debian 13 (Trixie), minimal server |
 | Docker | docker-ce from Docker's official repo |
 | CPU | Intel i7-8700K, Quick Sync iGPU |
-| Media disk | 2 TB ext4 at `/mnt/disk1`, bind-mounted to `/data` — temporary, 10 TB planned |
+| Media disk | 10 TB ext4 at `/mnt/disk1`, bind-mounted to `/data` — replacing a failed 2 TB (D27) |
 | Access | public 80/443 for three names; WireGuard (`wg-easy`) for admin |
 
 The scripts assume Debian: bash 5, GNU coreutils, `systemd`, `ufw`, and a Docker
@@ -244,6 +244,9 @@ services mount `/data` and that they all resolve to **one** source (invariant 1
 and 2, which no runtime error would catch), confirms Gluetun is still commented
 out, checks the exposure invariants (every published port names an interface,
 Caddy is not on a wildcard, the *arr auth env vars are present, `.env` is 0600),
+checks every Caddy `reverse_proxy` upstream is a compose service (a stale one
+passes `caddy validate` and serves 502; the wg route's `{$ADMIN_HOST}` is the
+one exemption),
 validates the Caddyfile, checks the landing page (invariant 7 — no external
 `src`/`href`, no CSS `url()` that is not a `data:` URI, no hardcoded host in an
 `href` or a `data-lan`, every `{{env}}` the page reads is set on the caddy
@@ -308,26 +311,34 @@ That last `grep` must print `1`, not `2`.
 
 ## Current state
 
-**Deployed and running on the Debian box since 9 August 2026.** Twelve services;
-both hardlink runs — torrent and usenet — report one inode and two names, and
-production Let's Encrypt certificates are issued over DNS-01 for every name.
-`validate.sh` and `audit-auth.sh` print their own totals; read those rather than
-a number written here, because every count in this file that was load-bearing
-has gone stale at least once. The stack is provisioned end to end: root folders,
-both download clients on every *arr, Prowlarr's app links and indexers,
-Recyclarr's profiles, Seerr wired to Radarr and Sonarr, and a verified Eweka
-connection.
+**Deployed on the Debian box since 9 August 2026, and being rebuilt in October
+2026.** The 2 TB media disk failed: I/O timeouts that showed up as stuttering
+playback. Its contents were abandoned and a 10 TB CMR drive replaces it. The
+rebuild keeps Debian, because the SSD also carries the Waydroid container
+feh-dumper runs, which has to survive (D41). It starts every app on a fresh
+config: Jellyfin straight onto 12.x (D7), and wg-easy with new peers (D27).
+The repo half is done: `jellyseerr` is renamed to `seerr`, `setup.sh` swaps
+the fstab UUID rather than reporting that it had, and it refuses to run
+without `LAN_SUBNET`. The box half is the procedure in README's "Replacing the
+media disk". **Until that has been run, nothing the live stack used to prove
+is proven on the new disk** — hardlinks, provisioning, `audit-auth.sh` — so do
+not report any of it as working.
 
-**Two changes are staged and not yet on the box (D37, D38).** Jellyseerr is
-migrated to seerr — abandoned image, patched RCE — and Lidarr is removed with
-music leaving the scope again. The seerr image ships `user: node:node`, which is
-UID 1000, where the old one ran as root — and D32 moved this box's service user
-to 1001, so seerr could read `${CONFIG_ROOT}/jellyseerr` and not write it. It
-crash-looped on its own log file and Caddy served 502 for the name. It is
-therefore pinned to `${PUID}:${PGID}` in compose rather than the config tree
-being chowned to 1000 (D40), and the in-place database migration is one-way: rehearse
-it against a copy first (verification.md item 15). Two `.env` variables come out
-on the box: `LIDARR_PORT` and `LIDARR_API_KEY`.
+The line spent a few days behind CGNAT in the middle of this and came back on
+a new static address (D42). If remote access breaks while the box looks
+healthy, check the router's WAN address before anything in this repo.
+
+Before the failure the stack was provisioned end to end — root folders, both
+download clients on every *arr, Prowlarr's app links and indexers, Recyclarr's
+profiles, Seerr wired to Radarr and Sonarr, a verified Eweka connection — and
+both hardlink runs reported one inode and two names. That is what the rebuild
+has to get back to. `validate.sh` and `audit-auth.sh` print their own totals;
+read those rather than a number written here, because every count in this file
+that was load-bearing has gone stale at least once.
+
+**D37 and D38 are on the box**: seerr replaced Jellyseerr, and Lidarr is gone.
+If the box's `.env` still has `LIDARR_PORT` and `LIDARR_API_KEY`, they can come
+out.
 
 The first deployment found nine defects, all in `setup.sh`, `provision.sh` or
 `audit-auth.sh`, and all of one shape: **the script reported success for
@@ -341,7 +352,11 @@ matched `ALLOW IN`, which only `ufw status verbose` prints; `provision.sh` set
 qBittorrent's password but never its username; it reconciled download client
 priority but not credentials, so a rotation left three apps stale; `audit-auth.sh`
 probed wg-easy on loopback when it binds `WG_UI_BIND`; and its Cleanuparr bypass
-check could never pass, because `jq`'s `//` substitutes on `false`.
+check could never pass, because `jq`'s `//` substitutes on `false`. The rebuild
+found two more before they happened: `configure_fstab` reported an existing line
+"already present" without comparing its UUID, so the disk swap would have
+succeeded on paper and mounted nothing; and an empty `LAN_SUBNET` made the
+firewall step skip the whole DOCKER-USER block with a warning.
 
 Still true and still worth carrying: a security and architecture review in
 August 2026 is written up in
@@ -376,7 +391,7 @@ because they invalidate reasonable-sounding assumptions:
   and cannot be observed. If `PUBLIC_HTTP` is ever set true, item 12 becomes
   testable and must be run *before* the forward is opened.
 - **fail2ban's web jails**, and the `jellyfin` jail stays disabled until
-  Jellyfin's Known Proxies is set to the compose bridge subnet.
+  Jellyfin's Known Proxies is set to the compose bridge subnet (item 16).
 - **Cleanuparr's deletion behaviour** (D30) — it has read-write `/data` and the
   library is not in the backup set. Enable one cleaner at a time.
 - **Usenet end to end.** The Eweka connection is verified, but nothing has been

@@ -644,61 +644,39 @@ degraded to copying, every imported file looks unlinked to it.
 
 - [ ] Passes
 
-## 15. Seerr came up on the migrated database
+## 15. ~~Seerr came up on the migrated database~~
 
-**Run the rehearsal first.** The migration from Jellyseerr rewrites
-`${CONFIG_ROOT}/jellyseerr` in place and is one-way (decisions.md D37), so prove
-it against a copy before the real one is touched:
+**Retired with the 10 TB rebuild (decisions.md D27).** This was the rehearsal
+for migrating `${CONFIG_ROOT}/jellyseerr` into seerr in place. The rebuild
+started seerr on an empty `${CONFIG_ROOT}/seerr`, so nothing was migrated. What
+still applies to a fresh instance is covered elsewhere: `audit-auth.sh` fails
+while the setup wizard is open (item 7), and `provision.sh` wires Seerr to
+Radarr and Sonarr once the wizard is done.
 
-```bash
-sudo ./scripts/backup-config.sh
-sudo cp -a /opt/mediaserver/jellyseerr /opt/mediaserver/seerr-rehearsal
-sudo chown -R 1000:1000 /opt/mediaserver/seerr-rehearsal
-docker run --rm --init -p 127.0.0.1:5056:5055 \
-  -v /opt/mediaserver/seerr-rehearsal:/app/config \
-  ghcr.io/seerr-team/seerr:latest
-```
+- [x] N/A — no migration on a fresh config
 
-In another shell, against the rehearsal port:
+## 16. Jellyfin 12 is set up for the proxy and the clients
 
-```bash
-curl -s http://127.0.0.1:5056/api/v1/status | jq '.version'
-curl -s http://127.0.0.1:5056/api/v1/settings/public | jq '.initialized'   # true
-```
-
-`initialized: false` is the failure that matters, and it does not look like one:
-it means the migration did not find the database and seerr has come up fresh,
-with an open setup wizard where the household front door used to be. Stop the
-container and `sudo rm -rf /opt/mediaserver/seerr-rehearsal` when done.
-
-**Then the real one.** The ownership change is the step that breaks the front
-door if it is skipped — the image declares `USER node:node`, and the old one ran
-as root:
+The rebuild started Jellyfin fresh on 12.x rather than carrying the 10.11
+database through the one-way 12.0 migration (decisions.md D7). Three things
+are new or easy to miss on 12:
 
 ```bash
-sudo chown -R 1000:1000 /opt/mediaserver/jellyseerr
-docker compose pull jellyseerr && docker compose up -d jellyseerr
-docker compose logs -f jellyseerr        # watch the migration run
-docker compose ps jellyseerr             # healthy, not just Up
+curl -s http://127.0.0.1:${JELLYFIN_PORT:-8096}/System/Info/Public | jq -r .Version   # 12.x
+docker compose exec -T jellyfin ls /config/data/plugins     # nothing third-party
+docker network inspect mediaserver_default -f '{{(index .IPAM.Config 0).Subnet}}'
 ```
 
-Caddy `depends_on` this service, so do not restart Caddy until it reports
-healthy — an unhealthy seerr takes every name in the house with it.
+- **Known proxies** (Dashboard → Networking) is set to that subnet. Then the
+  dashboard's session list shows each device's own address, not Caddy's
+  container address. That is the precondition for enabling the fail2ban
+  `jellyfin` jail (item 13).
+- **No third-party plugins.** 12.0 refuses to load anything built for 10.11.
+  InfuseSync 1.5.3 or later is the one worth adding, and it is optional.
+- **Infuse on the Apple TV is 8.5.2 or later**, the first version that speaks
+  12's API. 12.0 removed the legacy `/emby/` paths and the old sign-in, so an
+  out-of-date client fails to sign in rather than degrading.
 
-Then confirm the wiring survived, from the API rather than the UI (D18):
+Then play a title in Infuse, which is item 8's acceptance test too.
 
-```bash
-./scripts/provision.sh 2>&1 | grep -iA4 seerr
-./scripts/audit-auth.sh  | grep -i seerr
-```
-
-Expect the Radarr and Sonarr connections reconciled rather than created — a
-*created* connection means the migration lost them. `audit-auth.sh` must report
-initialised and an anonymous `GET /` that does not return 200.
-
-Finally, in a browser: sign in with an existing Jellyfin account, confirm the
-request history and user list are the ones from before, and push one test
-request through to Radarr.
-
-- [ ] Rehearsal passes on a copy
-- [ ] Passes on the live instance
+- [ ] Passes

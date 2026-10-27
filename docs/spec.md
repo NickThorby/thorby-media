@@ -14,7 +14,7 @@ management.
 | Motherboard | MSI Z370 GODLIKE GAMING | Killer E2500 NIC (`alx` driver) |
 | RAM | 32 GB | Far more than required |
 | OS disk | 500 GB SSD | OS, Docker, container configs |
-| Media disk | 2 TB, temporary — 10 TB CMR planned | Single drive; see §3.2 |
+| Media disk | 10 TB CMR (Seagate IronWolf) | Single drive; replaced a 2 TB that failed — see §3.2 |
 | Network | Wired gigabit LAN | Onboard WiFi is dead and must be disabled in BIOS |
 | GPU | None (discrete card removed) | iGPU used for transcoding |
 
@@ -141,16 +141,17 @@ container ever sees.
 
 ### 3.2 Filesystem
 
-**The current disk is a temporary 2 TB.** A 10 TB CMR drive is planned and will
-replace it rather than join it, at which point the box is expected to be rebuilt
-from this repo rather than migrated in place — which is the cheaper option while
-the library is small, and is only affordable because nothing here hardcodes a
-capacity. Everything below is size-independent.
+**The disk is a 10 TB CMR drive.** It replaced the temporary 2 TB the build
+started on, which failed in October 2026 before the planned swap. The box was
+rebuilt from this repo rather than migrated in place: the old library was
+abandoned, and every app started on a fresh config (decisions.md D27). That is
+only affordable because nothing here hardcodes a capacity. Everything below is
+size-independent.
 
-Two consequences worth holding while the 2 TB is in place. The Radarr profile is
-sized for the 10 TB (§8), so the disk fills in roughly 65–130 films; and nothing
-in the stack warns as it approaches full — see decisions.md D27 for what is
-deliberately *not* implemented.
+CMR, not SMR, is the requirement that matters. An SMR drive slows badly under
+sustained writes, which is exactly what imports and seeding produce. Nothing
+in the stack warns as the disk approaches full — see decisions.md D27 for what
+is deliberately *not* implemented.
 
 - ext4, formatted with `-m 0` — the default 5% root reserve is for a system
   disk that must not fill, and on a pure data disk it is simply lost (~100 GB

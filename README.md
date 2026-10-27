@@ -14,6 +14,11 @@ it later.
 > `validate.sh` and `audit-auth.sh` print their own totals — read those rather
 > than a number here, which is the kind that goes stale silently.
 >
+> **Being rebuilt on a 10 TB disk (October 2026).** The 2 TB media disk
+> failed; its contents were abandoned, Debian is kept, and every app starts on a
+> fresh config — Jellyfin straight onto 12.x, wg-easy with new peers. The
+> procedure is [Replacing the media disk](#replacing-the-media-disk) below (D27).
+>
 > **Seerr replaced Jellyseerr, and Lidarr was removed** (D37, D38). The
 > service, container and config directory are now all called `seerr` (D27).
 > seerr runs as `PUID:PGID` like everything else, not as the image's own UID
@@ -424,6 +429,14 @@ fail2ban `jellyfin` jail becomes safe to enable — `setup.sh` ships it
 **disabled** precisely because a jail fed proxy addresses bans the proxy and
 takes everyone offline at once.
 
+**This is Jellyfin 12** (decisions.md D7). Two things differ from the 10.x
+guides most of the internet still describes. Plugins built for 10.11 do not
+load at all, so add none from third parties; InfuseSync 1.5.3 or later is the
+only one worth having, and it is optional. And 12.0 removed the legacy `/emby/`
+paths and the old sign-in, so a client that has not been updated fails to sign
+in rather than degrading — Infuse needs 8.5.2 or later.
+[`docs/verification.md`](docs/verification.md) item 16 checks all of this.
+
 ### 9. Seerr — `:5055`
 
 The front door for everyone who is not you. The image is
@@ -540,6 +553,54 @@ inconsistency leaking into the TV library.
 
 ---
 
+## Replacing the media disk
+
+What the 10 TB swap in October 2026 is, written as a procedure because it is
+the one that will be repeated: drives fail. It **keeps Debian** — the SSD also
+carries the Waydroid container feh-dumper runs (D41) — and starts every app on
+a fresh config. The old library is not copied; if yours is worth keeping, copy
+it off before step 1 rather than relying on a failing disk to last.
+
+1. **Stop the stack** so nothing holds the old mounts:
+   `docker compose down --remove-orphans`. The `--remove-orphans` matters after
+   a pull that renamed a service — `jellyseerr` became `seerr` — because
+   without it the old container keeps running and keeps its published port.
+2. **Set the old config aside**, on the SSD:
+   `sudo mv /opt/mediaserver /opt/mediaserver.pre-rebuild`. It holds API keys,
+   Cleanuparr's database and the WireGuard peer keys, so delete it once nothing
+   turns out to be missing.
+3. **Drop the old images** so everything comes fresh:
+   `docker image prune -a`. Only this stack uses Docker on the box.
+4. **Power off and swap the disk.** On boot `nofail` lets the box come up with
+   nothing mounted, and Docker stays down because it requires the mount (D39).
+   That is expected.
+5. **Find the new disk** with `lsblk`, then:
+
+   ```bash
+   sudo ./setup.sh --dry-run --disk /dev/sdX --format-disk
+   sudo ./setup.sh --disk /dev/sdX --format-disk
+   ```
+
+   The dry run prints the fstab line it will rewrite: only the UUID changes,
+   and `nofail` stays. The real run backs fstab up with a timestamp, refuses if
+   the old disk is somehow still mounted, and ends by confirming `/mnt/disk1`
+   and `/data` are both on the new disk. It also repoints smartd at the new
+   disk.
+6. **Bring the stack up on empty configs** and follow
+   [Deployment](#deployment) from step 5 — keys, `provision.sh`, the three
+   wizards, `audit-auth.sh`, `test-hardlinks.sh` — then
+   [`docs/verification.md`](docs/verification.md), items 3, 5a, 8 and 16 above
+   all.
+
+   **wg-easy starts on an empty database too.** `INIT_*` applies again on this
+   first start, so `WG_USER`/`WG_PASS` from `.env` are the login, and every
+   peer has to be added afresh and its QR code rescanned. Until a peer exists
+   there is no remote access, so do this from the LAN before leaving the house.
+7. **A week later**, if nothing is missing:
+   `sudo rm -rf /opt/mediaserver.pre-rebuild`.
+
+---
+
 ## Adding a second drive (mergerfs migration)
 
 The `/data` bind mount exists so this is cheap. Container paths never change, so
@@ -627,7 +688,9 @@ alerting path that has never been tested is not an alerting path.
   (decisions.md D28)
 
 Back up before updating — `docker compose pull` on `:latest` tags can land a
-breaking major version:
+breaking major version. Jellyfin is the one to watch: 10.11 → 12 arrived on an
+ordinary pull and migrated the database one-way on first start (D7). If its
+major version has moved, read the release notes before pulling.
 
 ```bash
 ./scripts/backup-config.sh
@@ -641,8 +704,9 @@ not a backup.
 
 **Those backups live on the media disk**, which is the same physical drive as
 the library and currently the only one in the box. It protects against a bad
-upgrade or a botched config change, not against the drive failing — and the
-archive is the only copy of the wg-easy peer keys and every *arr database. Copy
+upgrade or a botched config change, not against the drive failing, which is
+what the 2 TB did in October 2026 — and the archive is the only copy of the
+wg-easy peer keys and every *arr database. Copy
 one off the box periodically until the second drive lands (§3.6, decisions.md
 D22, D27).
 

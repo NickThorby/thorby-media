@@ -83,6 +83,27 @@ automatic — no Watchtower. Back up `${CONFIG_ROOT}` before pulling.
 
 Revisit if an unattended update ever breaks the stack.
 
+**Two counter-examples since, neither of them an unattended update.**
+
+- **D37:** a repository that stopped being published. `:latest` went stale
+  rather than moving.
+- **Jellyfin 12, October 2026:** a deliberate pull crossed a major version
+  with a one-way database migration. Between 13 and 19 October the box went
+  from 10.11 to 12.2.0 on an ordinary `compose pull`. The 10.11 → 12
+  migration rewrites `jellyfin.db` on first start, rejects 10.11-built
+  plugins, and has no way back but a backup. It ran cleanly here, with no
+  third-party plugins installed. But nobody chose to make that upgrade; the
+  tag made it.
+
+`:latest` stays anyway. linuxserver publishes no major-only Jellyfin tag, only
+full versions and `version-<minor><distro>`, so the closest pin is a minor.
+Jellyfin shipped 12.0, 12.1, 12.2 and 12.3 within seven weeks, so pinning a
+minor means bumping it every couple of weeks: D7's original objection,
+multiplied. What changes is the pull: **before a `compose pull`, check
+whether Jellyfin's major version has moved**, and if it has, read the release
+notes and run `backup-config.sh` first. The rest of the stack is rolling and
+can keep being treated that way.
+
 ### D8. Two compose files, with production as the default
 
 **Retired.** The macOS dev box is no longer part of the deployment, and
@@ -739,6 +760,29 @@ gets to be wrong here if the reason it is carried is written down.
 Nothing on that list is urgent and none of it should be done piecemeal on the
 2 TB box. The whole value is that a rebuild makes each one free, and doing them
 one at a time on a live stack spends the risk without the saving.
+
+**What the rebuild actually did (October 2026).** The 2 TB disk failed before
+the 10 TB arrived: hundreds of I/O errors, mostly 30-second command timeouts,
+which showed up as stuttering playback. Its contents were abandoned rather
+than copied. The rebuild then went narrower than this decision planned. **Debian
+was kept**, because the SSD also carries the Waydroid container feh-dumper runs
+(D41), which has to survive. Every app's config was started fresh, which also
+meant starting on Jellyfin 12.x rather than carrying the migrated 10.11 database
+forward (D7), and wg-easy with an empty database, so every peer is reissued.
+Against the list above:
+
+- **`jellyseerr` → `seerr`: done.** Service key, `container_name`, config
+  directory and Caddy upstream.
+- **PUID/PGID 1001: carried, not fixed.** `media` can only get 1000 on a
+  freshly installed host, and this one was kept. The `${PUID:-1000}` fallbacks
+  stay as they are, for that reason: they describe the usual case and `.env`
+  supplies this box's.
+
+Two things turned up that the plan had missed. `setup.sh` reported an existing
+fstab line as "already present" without comparing its UUID with the new disk's,
+so the swap would have gone through while everything said success. It now
+rewrites the UUID in place and checks that both mounts land on the new disk.
+And the line spent a few days behind CGNAT in the middle of it (D42).
 
 ### D28. The DOCKER-USER chain must let containers out, and the block is rewritten rather than skipped
 
@@ -1668,6 +1712,43 @@ containers here open connections to Android's unauthenticated adbd.
 Verify after any reboot or Docker upgrade with `iptables -L DOCKER-USER -n -v`,
 looking for the `192.168.240.0/24` RETURN above the DROP. The visible symptom of
 it missing is FEH's connection error, not anything in this stack.
+
+---
+
+## D42. The line went behind CGNAT, and a new static IP fixed it
+
+In late October 2026 the ISP moved the line behind carrier-grade NAT without
+notice. The tell was the router's own WAN address, which was in
+`100.64.0.0/10` (RFC 6598 shared address space) and differed from the address
+the box went out to the internet as. The UDP `WG_PORT` forward then landed on
+an address nothing on the internet could reach. wg-easy kept reporting healthy,
+which was correct: it was up, it just could not be reached.
+
+Support granted a new static address on request. **Nothing in the repo
+changed.** `WG_HOST` is a name, not an address, so recovery was one A-record
+edit in Cloudflare and no peer config had to be reissued: README's DNS section
+says exactly that, and this was the first time it paid off. The addresses
+themselves stay out of this file, like every other real value (CLAUDE.md,
+Secrets).
+
+Removing wg-easy was planned and committed locally while the static IP looked
+unavailable, then dropped before it was pushed. Two things from that detour
+are worth keeping:
+
+- **If remote access breaks and the box looks fine, check the router's WAN
+  address first.** `100.64.x.x` there means CGNAT, and no forward, DDNS
+  updater or firewall change on this side can fix it.
+- **If a static address is ever unavailable, Tailscale is the fallback**,
+  because it dials out. It is not a drop-in replacement. Its addresses are
+  `100.64.0.0/10`, which is not RFC1918, so `admin_only` would 403 every
+  remote client and `private_only` would hide Manage until both range lists
+  widen together, or until clients arrive SNATed through a subnet route. The
+  `-i wg0` DOCKER-USER RETURN and the wg0 SSH allow are the templates for its
+  firewall half.
+
+`setup.sh`'s refusal to run without `LAN_SUBNET` also came out of that work.
+It used to skip the DOCKER-USER block silently, and it would have mattered with
+or without wg-easy.
 
 
 ---
