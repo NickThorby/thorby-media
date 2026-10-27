@@ -134,7 +134,7 @@ values. There is one compose file, so nothing here needs flags or an override.
 
 | Variable | Why it cannot wait |
 |---|---|
-| `LAN_SUBNET` | With it blank, `setup.sh` **skips the entire `DOCKER-USER` block** — the rules that actually keep the service ports off the internet — and falls back to allowing SSH from any source |
+| `LAN_SUBNET` | The `DOCKER-USER` block — the rules that actually keep the service ports off the internet — is built from it, so `setup.sh` refuses a real run without it |
 | `PUBLIC_DOMAIN` | Decides whether the firewall opens 80/443 and whether the fail2ban web jails are written |
 
 Both are re-read on every run and the firewall block is rewritten when they
@@ -189,13 +189,13 @@ smartd, sets UFW rules, and prints the values you need for the next step.
 deliberate: a default of `0.0.0.0` fails open, so deleting the line would
 silently publish everything on every interface.
 
-`LAN_SUBNET` matters more than it looks, in two directions. Leave it blank and
-the firewall blocks LAN clients from reaching Jellyfin, so Infuse on the Apple TV
-will not find it unless the Apple TV is a WireGuard peer. But leave it blank and
-`setup.sh` also **skips the `DOCKER-USER` rules entirely** — and those are what
-actually keep the service ports off the internet, because plain UFW does not
-filter Docker-published ports. Re-run `sudo ./setup.sh --skip-packages` after
-editing to apply the firewall change.
+`LAN_SUBNET` matters more than it looks, in two directions. It is what lets LAN
+clients reach Jellyfin at all, so Infuse on the Apple TV depends on it. And it is
+what the `DOCKER-USER` rules are built from — those are what actually keep the
+service ports off the internet, because plain UFW does not filter
+Docker-published ports. `setup.sh` used to skip them with a warning when it was
+blank; it now refuses a real run instead. Re-run `sudo ./setup.sh
+--skip-packages` after editing to apply the firewall change.
 
 **Prove the certificates against staging first.** Uncomment `CADDY_ACME_CA` in
 `.env` so the first issuance goes to Let's Encrypt's staging directory. Two

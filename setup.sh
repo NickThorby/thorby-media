@@ -119,6 +119,25 @@ preflight() {
   if $DRY_RUN; then
     warn "DRY RUN — nothing will be modified"
   fi
+
+  # Required for a real run, and checked here rather than at the firewall step
+  # so nothing has been mutated when it fails. The SSH allow, the LAN allow and
+  # the DOCKER-USER block are all built from LAN_SUBNET, and the firewall step
+  # used to meet an empty one by warning and skipping DOCKER-USER entirely --
+  # which is all of D19, so every published port went unfiltered while `ufw
+  # status` still reported default-deny. Compose requires it too (wg-easy's
+  # INIT_ALLOWED_IPS), but setup.sh runs before compose ever does. A dry run
+  # still proceeds, so the container rehearsal needs no .env.
+  if [[ -z "${LAN_SUBNET:-}" ]]; then
+    if $DRY_RUN; then
+      warn "LAN_SUBNET is unset — a real run stops here until it is set in .env"
+    else
+      die "LAN_SUBNET is unset in .env (e.g. 192.168.1.0/24).
+       The SSH allow, the LAN allow and the DOCKER-USER rules are all built
+       from it, and without DOCKER-USER nothing filters the published ports
+       (decisions.md D19)."
+    fi
+  fi
 }
 
 # ─── Steps ───────────────────────────────────────────────────────────────────
@@ -1062,6 +1081,7 @@ configure_docker_firewall() {
 
   [[ -f "$rules" ]] || { warn "$rules not found — is ufw installed?"; return 0; }
 
+  # Reachable only in a dry run: preflight refuses a real one without it.
   if [[ -z "${LAN_SUBNET:-}" ]]; then
     warn "LAN_SUBNET unset — skipping DOCKER-USER rules."
     warn "  Adding them without a LAN subnet would cut the LAN off from Jellyfin"
