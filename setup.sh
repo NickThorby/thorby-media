@@ -180,6 +180,20 @@ EOF
     ufw curl git htop jq
   ok "packages installed"
 
+  # GuC, HuC and DMC firmware for the Arc card (decisions.md D35). Jellyfin's
+  # image brings its own userspace drivers, but the kernel loads this from the
+  # host, and without HuC the card's low-power encoder is unavailable. It lives
+  # in non-free-firmware, which the "with firmware" netinst enables and a bare
+  # sources.list does not -- so a missing candidate warns rather than failing
+  # the run, since nothing else here depends on it.
+  if apt-cache show firmware-intel-graphics >/dev/null 2>&1; then
+    run apt-get install -y -qq firmware-intel-graphics
+    ok "Intel graphics firmware installed"
+  else
+    warn "firmware-intel-graphics not available — enable non-free-firmware in apt"
+    warn "  sources before fitting the Arc card, or it will run without GuC/HuC."
+  fi
+
   run systemctl enable --now docker
   ok "docker enabled at boot (required for unattended recovery, spec §9.1)"
 }
@@ -678,6 +692,18 @@ create_tree() {
   ok "tree created under $DATA_DIR, owned by ${PUID}:${PGID}"
 
   run mkdir -p "${CONFIG_ROOT:-/opt/mediaserver}"
+
+  # seerr and recyclarr run as PUID:PGID from their first instruction (compose
+  # `user:`, D40), where the LinuxServer images start as root and chown their own
+  # /config. Docker creates a missing bind source as root, so on an empty config
+  # root those two cannot write their own directory -- on the October 2026
+  # rebuild seerr crash-looped on its log file. Create them here, before compose
+  # can, so the chown below covers them.
+  local svc
+  for svc in seerr recyclarr; do
+    run mkdir -p "${CONFIG_ROOT:-/opt/mediaserver}/${svc}"
+  done
+
   run chown -R "${PUID}:${PGID}" "${CONFIG_ROOT:-/opt/mediaserver}"
   ok "config root ready at ${CONFIG_ROOT:-/opt/mediaserver}"
 }
