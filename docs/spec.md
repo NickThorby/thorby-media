@@ -10,13 +10,13 @@ management.
 
 | Component | Spec | Notes |
 |---|---|---|
-| CPU | Intel Core i7-8700K (Coffee Lake) | Quick Sync: HEVC 8/10-bit encode+decode, VP9 |
+| CPU | Intel Core i7-8700K (Coffee Lake) | Its UHD 630 cannot be enabled on this board (decisions.md D35) |
 | Motherboard | MSI Z370 GODLIKE GAMING | Killer E2500 NIC (`alx` driver) |
 | RAM | 32 GB | Far more than required |
 | OS disk | 500 GB SSD | OS, Docker, container configs |
 | Media disk | 10 TB CMR (Seagate IronWolf) | Single drive; replaced a 2 TB that failed — see §3.2 |
 | Network | Wired gigabit LAN | Onboard WiFi is dead and must be disabled in BIOS |
-| GPU | None (discrete card removed) | iGPU used for transcoding |
+| GPU | Intel Arc A380 (ASRock Challenger ITX, 6 GB) | Used for transcoding, via QSV — see §4.2 |
 
 ### 1.1 BIOS configuration
 
@@ -293,16 +293,21 @@ group_add:
   - "<render-gid>"   # from: getent group render
 ```
 
-In Jellyfin's playback settings:
+In Jellyfin's playback settings (Dashboard → Playback → Transcoding), for the
+Arc A380 (decisions.md D35):
 
-- Hardware acceleration: **VAAPI**
-- Device: `/dev/dri/renderD128`
-- Enable hardware decoding for H.264, HEVC, VP9
-- Enable hardware encoding
+- Hardware acceleration: **Intel QuickSync (QSV)**, with the device left at its
+  default; `/dev/dri/renderD128` is the only node
+- Hardware decoding for H.264, HEVC, MPEG2, VC1, VP9 and AV1, plus HEVC 10-bit,
+  VP9 10-bit and both HEVC RExt boxes. **Not VP8** — Arc has no VP8 decoder
+- Hardware encoding on, with both Intel Low-Power encoders on, because Arc
+  encodes in low-power mode only
+- Tone mapping: **VPP**, not OpenCL — the image has no Intel OpenCL runtime
 
-Verify on the host before starting: `vainfo` should list H.264 and HEVC
-encode/decode entrypoints. If `/dev/dri` does not exist, the iGPU is disabled
-in BIOS.
+Verify on the host before starting:
+`vainfo --display drm --device /dev/dri/renderD128` should list H.264 and HEVC
+with `VAEntrypointVLD` (decode) and `VAEntrypointEncSliceLP` (encode). If
+`/dev/dri` does not exist, the GPU's driver has not loaded.
 
 Note: with Infuse as the primary client, transcoding is rarely invoked because
 Infuse direct-plays nearly all codecs and containers. This config matters for

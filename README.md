@@ -117,10 +117,10 @@ DNS" template, scoped to this zone alone — in `CF_API_TOKEN`. It can write
 records in that one zone and nothing else, so a leak costs the zone's DNS rather
 than the account.
 
-**Hardware transcoding does not apply to this box** (D35). The board has no
-display outputs and therefore no IGD menu, so Quick Sync cannot be enabled and
-`vainfo` will report nothing useful. Skip that check; it is waiting on an Arc
-A310, which will need no configuration change when it arrives.
+**Hardware transcoding runs on an Intel Arc A380, not the CPU's iGPU** (D35).
+The board has no display outputs and therefore no IGD menu, so the i7-8700K's
+Quick Sync cannot be enabled. The Arc needed no compose change, but it does need
+`firmware-intel-graphics`, which `setup.sh` installs, and UEFI boot with CSM off.
 
 ---
 
@@ -212,13 +212,14 @@ certificate warning is the expected result and means everything else worked.
 Comment the variable out again and `docker compose restart caddy` to switch to
 real certificates.
 
-**4. Skip the iGPU check on this box** (D35). The board has no display outputs
-and no IGD menu in firmware, so Quick Sync cannot be enabled. On hardware where
-it can, this is the gate before starting anything:
+**4. Check the GPU** (D35). This is the gate before starting anything:
 
 ```bash
-vainfo | grep -Ei 'h264|hevc'
+vainfo --display drm --device /dev/dri/renderD128 2>&1 | grep -Ei 'h264|hevc'
 ```
+
+Expect `VAEntrypointVLD` and `VAEntrypointEncSliceLP` against both. Arc only
+has the low-power encoder, so a missing plain `EncSlice` is normal there.
 
 Both H.264 and HEVC must show decode and encode entrypoints. If `/dev/dri` is
 missing entirely, integrated graphics is disabled in BIOS — revisit §1.1.
@@ -410,10 +411,17 @@ priority-1 client, the queue carrying most TV and film is not covered by it.
 Create three libraries: `/data/media/movies`, `/data/media/tv`, and
 `/data/media/anime` as its own library. Then Dashboard → Playback:
 
-- Hardware acceleration: **VAAPI**
-- Device: `/dev/dri/renderD128`
-- Enable hardware decoding for H.264, HEVC, and VP9, and enable hardware
-  encoding
+- Hardware acceleration: **Intel QuickSync (QSV)**, with the device left at its
+  default
+- Hardware decoding: tick H.264, HEVC, MPEG2, VC1, VP9 and AV1, plus HEVC
+  10-bit, VP9 10-bit and both HEVC RExt boxes. **Leave VP8 off**, because Arc
+  cannot decode it. Jellyfin's defaults leave HEVC off, which means decoding most
+  of the library in software
+- Hardware encoding on, with both Intel Low-Power encoders on
+- Tone mapping: **VPP**, not OpenCL (the image has no Intel OpenCL runtime)
+
+Verification item 2 has an ffmpeg command that proves the card transcodes
+without needing a client.
 
 With Infuse as the primary client this rarely fires — Infuse direct-plays almost
 everything. It matters for browser and remote playback.
@@ -726,8 +734,9 @@ filesystem — `df /data/torrents /data/media` should show the same device.
 
 **Transcoding pins the CPU.** `/dev/dri` is not reaching the container, or
 `RENDER_GID` does not match the host's `render` group. Check
-`docker compose exec jellyfin ls -l /dev/dri`, and watch `intel_gpu_top` during
-playback.
+`docker compose exec jellyfin ls -l /dev/dri`, and watch `sudo intel_gpu_top`
+during playback. If the device is fine, check which codecs have hardware
+decoding ticked: Jellyfin's defaults leave HEVC off.
 
 **Sonarr finds nothing for anime.** Anime indexers are missing, or Series Type
 is not set to Anime.

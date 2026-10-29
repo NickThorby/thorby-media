@@ -5,63 +5,63 @@ on the box**, and most of them cannot be meaningfully approximated anywhere
 else — that is why they are a separate checklist rather than part of
 `validate.sh`.
 
-Work through them in order. Items 1–2 do not apply to this box and say why;
-3–4 are the ones people skip and regret.
+Work through them in order. 3–4 are the ones people skip and regret.
 
 ---
 
 ## 1. `vainfo` reports HEVC and H.264 encode/decode entrypoints
 
-**Not applicable on this hardware, and not merely pending (decisions.md D35).**
-
-The MSI Z370 GODLIKE GAMING has no display outputs, and MSI ships no
-Integrated Graphics Configuration menu on such boards — there is no
-`IGD Multi-Monitor` setting anywhere in the firmware, so the i7-8700K's UHD 630
-cannot be enabled. Confirmed on the box: nothing at PCI `00:02.0`, and the only
-DRM device is the GTX 980 Ti under `nouveau`, which VAAPI cannot transcode with.
-
-This is left as a check that cannot pass rather than deleted, because it becomes
-live the moment a VAAPI-capable card is fitted — an Intel Arc A310 is the
-intended one, and it needs no repo change at all: `RENDER_GID` stays 992,
-`docker-compose.yml` already passes `/dev/dri`, and `setup.sh` already puts the
-media user in the `render` group.
-
-When that card is in:
+The i7-8700K's own Quick Sync cannot be enabled on this board, so transcoding
+runs on an Intel Arc A380 (decisions.md D35).
 
 ```bash
-vainfo 2>&1 | grep -Ei 'h264|hevc'
+vainfo --display drm --device /dev/dri/renderD128 2>&1 | grep -Ei 'h264|hevc'
 ```
 
-Expect both `VAEntrypointVLD` (decode) and `VAEntrypointEncSlice` or
-`VAEntrypointEncSliceLP` (encode) against H264 and HEVC profiles.
+Expect `VAEntrypointVLD` (decode) and `VAEntrypointEncSliceLP` (encode) against
+the H264 and HEVC profiles. On Arc, `EncSliceLP` is the *only* encode
+entrypoint, so a missing `VAEntrypointEncSlice` is normal there. If nothing
+encodes, check that `dmesg | grep -i huc` says `authenticated`, because
+low-power encoding needs HuC (D35).
 
-- [ ] N/A — no VAAPI-capable GPU fitted
+- [x] Passes (29 Oct 2026, Arc A380: H.264, HEVC, HEVC 10-bit, VP9 and AV1)
 
 ## 2. `/dev/dri/renderD128` is visible inside the Jellyfin container
 
-**Also gated on D35.** `/dev/dri/renderD128` exists today and is passed into the
-container, so a naive check here *passes* — it is the nouveau render node for
-the 980 Ti, and it transcodes nothing. That is precisely the silent success this
-file exists to catch, so identify the device by vendor rather than by name:
+Identify the device by vendor rather than by name. Until 29 October 2026 the
+node was the GTX 980 Ti under `nouveau`, so a check by name *passed* while
+transcoding nothing. That is precisely the silent success this file exists to
+catch.
 
 ```bash
-for d in /sys/class/drm/card*/device; do
-  echo "$(basename "$(dirname "$d")") vendor=$(cat "$d/vendor")"
-done                                      # 0x8086 is Intel; 0x10de is NVIDIA
+for d in /sys/class/drm/renderD*/device; do
+  echo "$(basename "$(dirname "$d")") vendor=$(cat "$d/vendor") driver=$(basename "$(readlink "$d/driver")")"
+done                                      # want vendor=0x8086 driver=i915
 getent group render                       # must match RENDER_GID in .env
 docker compose exec jellyfin ls -l /dev/dri
 ```
 
-With two cards fitted, enumeration order is not guaranteed, so set Jellyfin's
-VAAPI device explicitly to whichever node is Intel rather than trusting the
-`renderD128` default: Dashboard → Playback → hardware acceleration VAAPI.
+A functional test beats a settings screenshot. This transcodes a minute of a
+real file on the card, as Jellyfin's own user, and needs no client:
 
-A functional test beats a settings screenshot — play a file that forces a
-transcode (browser client, cap the quality) and watch `intel_gpu_top`. The Video
-engine should show activity; if the CPU pegs and the GPU stays idle, it is
-falling back to software.
+```bash
+docker compose exec -T -u abc jellyfin /usr/lib/jellyfin-ffmpeg/ffmpeg \
+  -hide_banner -nostdin -v error -stats \
+  -init_hw_device vaapi=va:/dev/dri/renderD128 -init_hw_device qsv=qs@va \
+  -filter_hw_device qs -hwaccel qsv -hwaccel_output_format qsv \
+  -c:v hevc_qsv -i '/data/media/<some HEVC file>.mkv' -t 60 \
+  -vf scale_qsv=w=1280:h=720:format=nv12 -c:v h264_qsv -b:v 4M -an -sn -f null -
+```
 
-- [ ] N/A — no VAAPI-capable GPU fitted
+It should finish many times faster than realtime; the A380 did 37× on a 10-bit
+HEVC episode. Then do the same through Jellyfin: play a file that forces a
+transcode (browser client, cap the quality) and watch `sudo intel_gpu_top`. The
+Video engine should show activity. If the CPU pegs and the GPU stays idle, it
+is falling back to software. Jellyfin's default decode list does that for HEVC,
+which it leaves unticked (spec §4.2).
+
+- [x] Device and ffmpeg test — passes (29 Oct 2026)
+- [ ] Jellyfin transcoding a real playback on the card
 
 ## 3. A test import produces a shared inode, not a copy
 
@@ -333,6 +333,7 @@ test. Both failures presented as a fully healthy `docker compose ps`:
 |---|---|---|
 | 9 Aug 2026 | Caddy published no ports, wg-easy's web UI dead, container DNS broken (D36) | 12/12 up, wg-easy **healthy** |
 | 15 Aug 2026 | Every container bound an empty `/data` on the SSD (D39) | 12/12 healthy, disk mounted, 765 GB present |
+| 29 Oct 2026 | A boot with no address left Caddy with no network or ports, and the next good boot kept it that way (D36 amendment) | 12/12 up |
 
 Docker started before the WiFi had an address in the first case, and before the
 media disk had spun up in the second. Healthchecks passed throughout, because
@@ -371,11 +372,19 @@ findmnt /mnt/disk1 && findmnt /data
 
 **2. Did Caddy actually publish its ports?** It binds a specific address and
 Docker silently leaves the container running without the bindings if that
-address is absent (D36).
+address is absent (D36). It has also survived a later clean boot that way, so
+check this even when the current boot looks fine.
 
 ```bash
 docker port caddy                 # must list 80 and 443
 ss -lnt | grep -E ':(80|443|51821)'
+./scripts/validate.sh             # fails on this too, whenever caddy is running
+```
+
+If they are missing, recreate the container. A reboot did not fix it last time:
+
+```bash
+docker compose up -d --force-recreate --no-deps caddy
 ```
 
 **3. Is the wg-easy UI serving, not just the tunnel?** Its healthcheck now tests

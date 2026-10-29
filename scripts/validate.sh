@@ -314,6 +314,29 @@ fi
 if ! docker compose ps --status running --services 2>/dev/null | grep -qx caddy; then
   skip "caddy is not running — cannot compare the live config to disk"
 else
+  # Before the config: is Caddy reachable at all? If CADDY_BIND_ADDR is absent
+  # when Docker starts it, Docker leaves the container running with no bindings
+  # and says nothing (D36). On 29 October 2026 the next boot restored it the
+  # same way, with no network attached, even though the address was there by
+  # then — so this does not heal itself. Both comparisons below still pass in
+  # that state, because they talk to Caddy from inside its own container.
+  unpublished=
+  while read -r proto target want; do
+    [[ -n "$target" ]] || continue
+    got=$(docker compose port --protocol "$proto" caddy "$target" 2>/dev/null || true)
+    [[ "$got" == "$want" ]] || unpublished+="$want/$proto (got '${got}') "
+  done < <(jq -r '.services.caddy.ports // [] | .[]
+                  | "\(.protocol // "tcp") \(.target) \(.host_ip):\(.published)"' <<<"$rendered")
+  if [[ -z "$unpublished" ]]; then
+    ok "caddy's ports are actually published, as compose declares them"
+  else
+    bad "caddy is running WITHOUT its published ports: ${unpublished% }"
+    printf '      %s\n' \
+      "Docker started it before CADDY_BIND_ADDR existed, and every name is dead." \
+      "Rebooting did not fix it last time (D36); recreating does:" \
+      "docker compose up -d --force-recreate --no-deps caddy"
+  fi
+
   # Two comparisons, because there are two ways to serve the wrong config and
   # each hides the other.
   #

@@ -24,7 +24,8 @@ until the box was built and was removed with it.
 |---|---|
 | OS | Debian 13 (Trixie), minimal server |
 | Docker | docker-ce from Docker's official repo |
-| CPU | Intel i7-8700K, Quick Sync iGPU |
+| CPU | Intel i7-8700K; its iGPU cannot be enabled on this board (D35) |
+| GPU | Intel Arc A380, for Jellyfin transcoding via QSV (D35) |
 | Media disk | 10 TB ext4 at `/mnt/disk1`, bind-mounted to `/data` — replacing a failed 2 TB (D27) |
 | Access | public 80/443 for three names; WireGuard (`wg-easy`) for admin |
 
@@ -253,12 +254,15 @@ validates the Caddyfile, checks the landing page (invariant 7 — no external
 service, and the tiles' `data-sub` set still equals the `sites.caddy` route
 set), and shellchecks every script. Run it before every commit.
 
-One check is not static: if Caddy is running, it compares the hostnames the
+Two checks are not static. If Caddy is running, it compares the hostnames the
 **live** process serves against `caddy adapt` of the file on disk. Caddy reads
 its config only at start, and `compose up -d` does not recreate a container
 whose definition has not changed, so a pulled route change can sit unserved
 indefinitely with everything looking healthy. That is how a deleted service kept
-a live route for a day (D39). It skips when the stack is down.
+a live route for a day (D39). It also checks that Docker actually published
+Caddy's ports. A boot without the LAN address leaves Caddy `Up` with none, and on
+29 October the next boot restored it the same way, so only a recreate fixes it
+(D36's amendment). Both checks are skipped when the stack is down.
 
 Not everything it prints is a pass or a fail. A yellow `–` is a warning it
 cannot resolve on its own — a `WG_SUBNET` outside the ranges `private_only`
@@ -374,11 +378,12 @@ because they invalidate reasonable-sounding assumptions:
 [`docs/verification.md`](docs/verification.md), open questions in
 [`docs/decisions.md`](docs/decisions.md).
 
-- **Hardware transcoding is impossible on this board**, not merely untested. No
-  display outputs means no IGD menu in the firmware, so Quick Sync cannot be
-  enabled; an Arc A310 is the plan (D35). Items 1 and 2 are marked N/A, and
-  item 2 checks the PCI vendor because `/dev/dri/renderD128` exists today, is
-  passed into Jellyfin, and is the nouveau node.
+- **Jellyfin transcoding on the Arc in real playback.** The A380 went in on 29
+  October 2026 (D35). Items 1 and 2 pass, and an ffmpeg run inside Jellyfin's
+  container transcoded HEVC to H.264 on the card. But no Jellyfin playback has
+  been watched transcoding on it yet, and HDR tone mapping is untested. Item 2
+  still checks the device by PCI vendor, because the node it replaced had the
+  same name and transcoded nothing.
 - **Unattended boot after a power cut** (item 8) — needs the plug pulled. The
   boot ordering of Docker against ufw has never been exercised here, and
   `DOCKER-USER` is the whole of D19: check the chain is populated after a

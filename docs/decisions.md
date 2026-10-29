@@ -1304,7 +1304,7 @@ amendment that the Manage dots cannot fire.
 
 ---
 
-## D35. Quick Sync is impossible on this board; an Arc A310 is the plan
+## D35. Quick Sync is impossible on this board; an Arc A380 does the transcoding
 
 The i7-8700K has UHD 630 and the spec is built around it — `/dev/dri`,
 `RENDER_GID`, `group_add`, VAAPI in Jellyfin. None of it can be used here.
@@ -1327,7 +1327,8 @@ would decode in software and encode to H.264, in exchange for taking on the
 proprietary driver, `nvidia-container-toolkit`, and compose changes that
 contradict the LinuxServer VAAPI design used everywhere else here.
 
-**The plan is an Intel Arc A310**, and the reason it is the right answer is that
+**The plan was an Intel Arc A310**, and the A380 that was actually bought is the
+same DG2 die with the same media engine. The reason it is the right answer is that
 it changes nothing: it speaks VAAPI through `/dev/dri`, `RENDER_GID` stays 992,
 `docker-compose.yml` already passes the device, and `setup.sh` already puts the
 media user in `render`. It also has display outputs, so it replaces the 980 Ti
@@ -1342,10 +1343,60 @@ remux is 60–80 Mbps against a residential uplink. Software transcoding a 4K HE
 on six cores is roughly one stream. That is the pressure that will eventually
 buy the card.
 
-**Verification items 1 and 2 are marked N/A rather than pending**, and item 2
-gained a check by PCI vendor. `/dev/dri/renderD128` exists today and is passed
-into Jellyfin, so the obvious check *passes* while transcoding is impossible —
-exactly the silent success that file exists to catch.
+**Verification items 1 and 2 were marked N/A rather than pending** until the
+card arrived, and item 2 gained a check by PCI vendor. `/dev/dri/renderD128`
+existed and was passed into Jellyfin, so the obvious check *passed* while
+transcoding was impossible — exactly the silent success that file exists to
+catch.
+
+### Fitted, 29 October 2026
+
+An ASRock Arc A380 Challenger ITX replaced the 980 Ti. Each item below cost time
+on the day, and most of them are not about transcoding.
+
+- **It would not post on the old firmware.** With CSM enabled the board stopped
+  at POST code D6 (no console output device) with a blank screen. Disabling CSM
+  alone did not fix it on A.80, the 2019 firmware; it posted after an update to
+  A.C0 (2024). An update restores the firmware defaults, and §1.1's `Restore on
+  AC Power Loss` is one of them, so recheck it after any update.
+- **The card renumbers the PCI bus.** Arc sits behind its own PCIe switch, which
+  shifts every bus number after it by three. The GPU is at `05:00.0`, and the
+  WiFi came up as `wlp13s0` instead of `wlp10s0`. Everything that configures the
+  WiFi names `wlp10s0`, so the box booted with no address, and that boot found
+  a new failure (D36's amendment). It is fixed on the box, outside this repo, by
+  `/etc/systemd/network/10-wifi-name.link`, which pins the card's MAC to the old
+  name. It has to be in the initramfs (`update-initramfs -u`), because Debian
+  renames interfaces there. A fresh install would name the interface by its new
+  bus from the start and would not need it.
+- **Firmware.** `firmware-intel-graphics`, from `non-free-firmware`, supplies
+  GuC, HuC and DMC, and `setup.sh` installs it. `dmesg` should show `HuC:
+  authenticated`, because the media driver needs HuC for low-power encoding.
+- **Jellyfin uses QSV, not spec §4.2's original VAAPI.** It is Jellyfin's
+  recommended method for Intel GPUs and uses the same render node and
+  `RENDER_GID`, so compose did not change. There are three Arc specifics, now
+  in §4.2:
+  - **Encoding is low-power only.** `vainfo` lists `VAEntrypointEncSliceLP`
+    and no `EncSlice`. The Low-Power toggles made no measurable difference in a
+    test, because the runtime picks LP anyway, but they state what actually
+    happens.
+  - **Arc has no VP8 decoder.** VP8 must stay unticked.
+  - **The image ships no Intel OpenCL runtime**
+    (`/etc/OpenCL/vendors` holds only `nvidia.icd`), so tone mapping has to be
+    VPP, not OpenCL.
+
+  Left at its defaults, Jellyfin 12 enabled hardware decoding for H.264 and VC-1
+  only. HEVC was off, which on this library means software decoding.
+- **Resizable BAR is unavailable.** The kernel logs that it cannot resize the
+  BAR on Z370 and falls back to 256 MiB. That matters for games, not for the
+  media engine.
+- **Waydroid moved with it.** `waydroid upgrade --offline` regenerated
+  `ro.hardware.vulkan` from `nouveau` to `intel` (D41). feh-dumper picks its GPU
+  itself and needed nothing.
+
+**What was verified that day:** items 1 and 2, and a 10-bit HEVC episode
+transcoded to 720p H.264 on the card at 37× realtime, run as Jellyfin's own
+user inside its container. **Not yet seen:** Jellyfin itself transcoding during
+real playback, and HDR tone mapping.
 
 ---
 
@@ -1414,6 +1465,29 @@ around a boot race would have traded a real invariant for a symptom.
 exposed it. Verification item 8 is the test, and it has not been re-run — a
 graceful reboot exercises the same race, so it is worth doing before the power
 cut.
+
+**Amended 29 October 2026: the non-fatal path ran, and it does not heal.**
+Fitting the Arc card renamed the WiFi interface (D35), so one boot came up with
+no address at all. The drop-in waited its 60 seconds and let Docker start, as
+designed, and Caddy came up exactly as described above: `Up`, no ports.
+
+The new part is the next boot. The WiFi was fixed, the lease landed 0.7 seconds
+before dockerd started, and Caddy *still* had no ports. Docker 29.9.1 had
+restored it with no network attached at all — `NetworkSettings.Networks` was
+empty, Caddy's own log showed every outbound connection failing with `network is
+unreachable`, and dockerd logged nothing about it. The other ten containers on
+the bridge, none of which binds the LAN address, joined it normally.
+Recreating the container fixed it:
+
+```bash
+docker compose up -d --force-recreate --no-deps caddy
+```
+
+So a boot that misses the address can break the front door until someone
+notices, not just until the next reboot. `validate.sh` now fails when Caddy is
+running without the ports compose declares, and verification item 8's second
+check says the same. The 60-second wait stays non-fatal for the reason given
+above; what changed is that the failure it permits is now caught.
 
 ---
 
