@@ -61,7 +61,9 @@ is falling back to software. Jellyfin's default decode list does that for HEVC,
 which it leaves unticked (spec §4.2).
 
 - [x] Device and ffmpeg test — passes (29 Oct 2026)
-- [ ] Jellyfin transcoding a real playback on the card
+- [x] Jellyfin transcoding a real playback on the card — passes (29 Oct 2026:
+      1080p H.264 to 540p, VA-API decode and scale, `h264_qsv` low-power
+      encode, 45× realtime, read from `/config/log/FFmpeg.Transcode-*.log`)
 
 ## 3. A test import produces a shared inode, not a copy
 

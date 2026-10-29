@@ -378,12 +378,12 @@ because they invalidate reasonable-sounding assumptions:
 [`docs/verification.md`](docs/verification.md), open questions in
 [`docs/decisions.md`](docs/decisions.md).
 
-- **Jellyfin transcoding on the Arc in real playback.** The A380 went in on 29
-  October 2026 (D35). Items 1 and 2 pass, and an ffmpeg run inside Jellyfin's
-  container transcoded HEVC to H.264 on the card. But no Jellyfin playback has
-  been watched transcoding on it yet, and HDR tone mapping is untested. Item 2
-  still checks the device by PCI vendor, because the node it replaced had the
-  same name and transcoded nothing.
+- **The Arc's HDR tone mapping, and HEVC through Jellyfin.** The A380 went in
+  on 29 October 2026 (D35). Items 1 and 2 pass, including a real Jellyfin
+  playback transcoded on the card, but that source was H.264. HEVC decode was
+  proven only by a manual ffmpeg run, and VPP tone mapping has not run at all.
+  Item 2 still checks the device by PCI vendor, because the node it replaced had
+  the same name and transcoded nothing.
 - **Unattended boot after a power cut** (item 8) — needs the plug pulled. The
   boot ordering of Docker against ufw has never been exercised here, and
   `DOCKER-USER` is the whole of D19: check the chain is populated after a

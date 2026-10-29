@@ -1395,8 +1395,11 @@ on the day, and most of them are not about transcoding.
 
 **What was verified that day:** items 1 and 2, and a 10-bit HEVC episode
 transcoded to 720p H.264 on the card at 37× realtime, run as Jellyfin's own
-user inside its container. **Not yet seen:** Jellyfin itself transcoding during
-real playback, and HDR tone mapping.
+user inside its container. Then a real browser playback capped to 720 kbps: Jellyfin
+decoded and scaled through VA-API on the card and encoded with `h264_qsv` in
+low-power mode, at 45× realtime. **Not yet seen:** HDR tone mapping, and
+Jellyfin decoding an HEVC source (that playback was H.264; HEVC was proven only
+by the manual ffmpeg run).
 
 ---
 
